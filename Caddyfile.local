@@ -1,0 +1,16 @@
+localhost:8443 {
+    tls internal
+
+    # Static frontend assets
+    root * /Users/bobosola/Sites/album/static
+    file_server
+
+    # API reverse proxy
+    reverse_proxy /api/* localhost:18080
+
+    # Photos and thumbnails
+    handle_path /photos/* {
+        root * /Users/bobosola/photos
+        file_server
+    }
+}
