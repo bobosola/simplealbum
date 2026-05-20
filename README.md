@@ -131,6 +131,18 @@ The worker pool limits concurrent jobs to your CPU's available parallelism (clam
 
 ---
 
+## Logging
+
+Simple Album logs to the terminal (stdout/stderr) only — there is no log file. Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable:
+
+```bash
+SIMPLE_ALBUM_LOG=debug ./target/release/album
+```
+
+Available levels: `trace`, `debug`, `info` (default), `warn`, `error`.
+
+---
+
 ## Configuration
 
 | Environment Variable | Purpose |

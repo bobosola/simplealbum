@@ -2,7 +2,7 @@ localhost:8443 {
     tls internal
 
     # Static frontend assets
-    root * /Users/bobosola/Sites/album/static
+    root * /Users/bobosola/Sites/simplealbum/static
     file_server
 
     # API reverse proxy

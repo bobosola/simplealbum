@@ -29,7 +29,7 @@ caddy version
 From the project root:
 
 ```bash
-cd /Users/bobosola/Sites/album
+cd /Users/bobosola/Sites/simplealbum
 cargo build --release
 ```
 
@@ -39,10 +39,10 @@ The binary is produced at `./target/release/album`.
 
 ## 2. Create Test Photo Tree
 
-A sample album structure is provided in the repo:
+Create some sample folders under your configured album root (`/Users/bobosola/photos`):
 
 ```
-testdata/
+/Users/bobosola/photos/
 ├── 1970-79/
 │   ├── 1970/
 │   │   └── (sample images)
@@ -57,23 +57,19 @@ testdata/
 │       └── (sample images)
 ```
 
-If it does not exist yet, create it:
+Create the structure and copy in some of your own photos:
 
 ```bash
-mkdir -p testdata/1970-79/1970
-mkdir -p testdata/1970-79/1971/summer\ holiday
-mkdir -p testdata/1980-89/1981
-mkdir -p testdata/1980-89/1982
+mkdir -p /Users/bobosola/photos/1970-79/1970
+mkdir -p /Users/bobosola/photos/1970-79/1971/summer\ holiday
+mkdir -p /Users/bobosola/photos/1980-89/1981
+mkdir -p /Users/bobosola/photos/1980-89/1982
 
-# Copy sample images (screenshots from the repo)
-cp screenshots/*.png testdata/1970-79/1970/
-cp screenshots/*.png testdata/1970-79/1971/
-cp screenshots/*.png testdata/1970-79/1971/summer\ holiday/
-cp screenshots/*.png testdata/1980-89/1981/
-cp screenshots/*.png testdata/1980-89/1982/
+# Copy your own photos
+# cp ~/Desktop/some_photos/*.jpg /Users/bobosola/photos/1970-79/1970/
 ```
 
-You can add your own photos directly into `testdata/` at any time while the service is running.
+You can add or remove photos at any time while the service is running.
 
 ---
 
@@ -86,10 +82,10 @@ A pre-made local config exists at `album.local.toml`:
 bind = "127.0.0.1:18080"
 
 [album]
-root = "/Users/bobosola/Sites/album/testdata"
+root = "/Users/bobosola/photos"
 
 [state]
-db_path = "/Users/bobosola/Sites/album/testdata.db"
+db_path = "/Users/bobosola/Sites/simplealbum/album.db"
 
 [admin]
 key = ""
@@ -98,7 +94,7 @@ key = ""
 On first startup the service will generate an admin key and write it back into this file. If you want a completely fresh start, delete the database files first:
 
 ```bash
-rm -f testdata.db testdata.db-shm testdata.db-wal
+rm -f album.db album.db-shm album.db-wal
 ```
 
 ---
@@ -108,8 +104,8 @@ rm -f testdata.db testdata.db-shm testdata.db-wal
 ### Terminal 1 — Album Service
 
 ```bash
-cd /Users/bobosola/Sites/album
-SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/album/album.local.toml ./target/release/album
+cd /Users/bobosola/Sites/simplealbum
+SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/simplealbum/album.local.toml ./target/release/album
 ```
 
 **What this does:**
@@ -120,14 +116,14 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/album/album.loca
 **Expected output:**
 
 ```
-INFO album: Config loaded from /Users/bobosola/Sites/album/album.local.toml
-INFO album: Album root: /Users/bobosola/Sites/album/testdata
+INFO album: Config loaded from /Users/bobosola/Sites/simplealbum/album.local.toml
+INFO album: Album root: /Users/bobosola/photos
 INFO album: API binding: 127.0.0.1:18080
 INFO album: FFmpeg detected.
-INFO album::db: Database opened with WAL mode: /Users/bobosola/Sites/album/testdata.db
+INFO album::db: Database opened with WAL mode: /Users/bobosola/Sites/simplealbum/album.db
 INFO album: Starting initial scan...
 INFO album: Initial scan queued. Starting watcher and API...
-INFO album::watcher: Filesystem watcher started on /Users/bobosola/Sites/album/testdata
+INFO album::watcher: Filesystem watcher started on /Users/bobosola/photos
 INFO album: API server listening on 127.0.0.1:18080
 INFO album: Admin URL: https://localhost:8443/#admin=xxxxxxxxxxxx
 ```
@@ -143,7 +139,7 @@ INFO album: Admin URL: https://localhost:8443/#admin=xxxxxxxxxxxx
 ### Terminal 2 — Caddy
 
 ```bash
-cd /Users/bobosola/Sites/album
+cd /Users/bobosola/Sites/simplealbum
 caddy run --config Caddyfile.local
 ```
 
@@ -154,7 +150,7 @@ localhost:8443 {
     tls internal
 
     # Static frontend assets
-    root * /Users/bobosola/Sites/album/static
+    root * /Users/bobosola/Sites/simplealbum/static
     file_server
 
     # API reverse proxy
@@ -162,7 +158,7 @@ localhost:8443 {
 
     # Photos and thumbnails
     handle_path /photos/* {
-        root * /Users/bobosola/Sites/album/testdata
+        root * /Users/bobosola/photos
         file_server
     }
 }
@@ -172,7 +168,7 @@ localhost:8443 {
 - `tls internal` — Caddy generates a self-signed certificate automatically.
 - Serves the frontend HTML/CSS/JS from `./static/`.
 - Proxies `/api/*` to the Rust service on `localhost:18080`.
-- Serves photos and thumbnails directly from `./testdata/`.
+- Serves photos and thumbnails directly from `/Users/bobosola/photos`.
 
 **To stop:** Press `Ctrl+C` in this terminal.
 
@@ -204,13 +200,13 @@ A padlock icon appears in the header. You can now set folder covers.
 
 With both services running:
 
-1. Copy a new image into `testdata/1980-89/1981/`:
+1. Copy a new image into `/Users/bobosola/photos/1980-89/1981/`:
    ```bash
-   cp ~/Desktop/some_photo.jpg testdata/1980-89/1981/
+   cp ~/Desktop/some_photo.jpg /Users/bobosola/photos/1980-89/1981/
    ```
 2. Wait 1–3 seconds (macOS FSEvents has a slight delay).
 3. Refresh the browser page.
-4. The new photo appears automatically. A thumbnail is generated in `testdata/1980-89/1981/thumbs/`.
+4. The new photo appears automatically. A thumbnail is generated in `/Users/bobosola/photos/1980-89/1981/thumbs/`.
 
 Delete a file and refresh — it disappears from the grid.
 
@@ -227,8 +223,8 @@ Delete a file and refresh — it disappears from the grid.
 
 1. Delete old thumbnails if you want a completely fresh state:
    ```bash
-   find testdata -type d -name thumbs -exec rm -rf {} + 2>/dev/null
-   rm -f testdata.db testdata.db-shm testdata.db-wal
+   find /Users/bobosola/photos -type d -name thumbs -exec rm -rf {} + 2>/dev/null
+   rm -f album.db album.db-shm album.db-wal
    ```
 
 2. Start both services again in separate terminals (steps 4 and 5).
@@ -271,8 +267,8 @@ Then double-click the certificate, expand **Trust**, and set **"When using this 
 | Start album service | `SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=album.local.toml ./target/release/album` |
 | Start Caddy | `caddy run --config Caddyfile.local` |
 | Stop either service | `Ctrl+C` in its terminal |
-| Fresh database | `rm -f testdata.db testdata.db-shm testdata.db-wal` |
-| Fresh thumbnails | `find testdata -type d -name thumbs -exec rm -rf {} +` |
+| Fresh database | `rm -f album.db album.db-shm album.db-wal` |
+| Fresh thumbnails | `find /Users/bobosola/photos -type d -name thumbs -exec rm -rf {} +` |
 | View logs | Service logs to stdout (because of `SIMPLE_ALBUM_LOG=info`) |
 | Caddy logs | Also to stdout in its terminal |
 
