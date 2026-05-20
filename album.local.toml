@@ -5,7 +5,7 @@ bind = "127.0.0.1:18080"
 root = "/Users/bobosola/photos"
 
 [state]
-db_path = "/Users/bobosola/Sites/album/album.db"
+db_path = "/Users/bobosola/Sites/simplealbum/album.db"
 
 [admin]
 key = "luzCdn5CvFAAhaANY6IQiU3KK-2a8bzfphGWVUUPLsk"
