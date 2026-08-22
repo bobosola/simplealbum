@@ -64,10 +64,12 @@ The frontend is plain HTML, CSS, and vanilla JavaScript (ES2020+). No frameworks
 └── thumbs/                  ← optional: decade-level cover thumbs
 ```
 
-**Rules:**
-- Top level: decade spans named exactly `YYYY-YY` (e.g. `1970-79`).
-- Second level: single years named exactly `YYYY` (e.g. `1971`).
+**Suggested convention** (not enforced by the app):
+- Top level: decade spans named `YYYY-YY` (e.g. `1970-79`).
+- Second level: single years named `YYYY` (e.g. `1971`).
 - Third level and deeper: event/album folders with free names (e.g. `Christmas`, `summer holiday`).
+
+Any valid folder names are accepted; the app simply reads directories recursively and sorts contents lexicographically by filename.
 - **Images**: JPEG, PNG, WEBP.
 - **Videos**: MP4 (H.264), MOV, AVI, WebM, MKV. Playback uses the browser's native HTML5 `<video>` player (supported by all browsers from 2020 onwards). For maximum compatibility, MP4 with H.264 is recommended.
 - **Thumbnails**: generated automatically in a `thumbs/` subfolder within any folder that contains media.
