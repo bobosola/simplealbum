@@ -9,7 +9,7 @@ localhost:8443 {
     reverse_proxy /api/* localhost:18080
 
     # Photos and thumbnails
-    handle_path /photos/* {
+    handle_path /photoalbum/* {
         root * /Users/bobosola/photos
         file_server
     }
