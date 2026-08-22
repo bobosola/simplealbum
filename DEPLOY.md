@@ -158,7 +158,8 @@ album.example.com {
         file_server
     }
 
-    # Security headers
+    # Security headers (adjust or remove Content-Security-Policy if your frontend
+    # loads scripts/styles from external CDNs or makes cross-origin fetch calls)
     header {
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
