@@ -22,6 +22,20 @@ pub fn generate_image_thumb(src: &Path, dst: &Path) -> anyhow::Result<(u32, u32)
     // Atomic write: temp file then rename so a crash never leaves a partial thumb.
     let tmp = dst.with_extension("tmp");
     thumb.save_with_format(&tmp, image::ImageFormat::Jpeg)?;
+
+    // Sanity check: a 400×300 RGB JPEG should not be under 1KB.
+    // If it is, the decoder likely produced garbage pixels (e.g. solid grey).
+    if let Ok(meta) = std::fs::metadata(&tmp) {
+        if meta.len() < 1024 {
+            let _ = std::fs::remove_file(&tmp);
+            anyhow::bail!(
+                "Generated thumbnail is suspiciously small ({} bytes) — probable decoder failure. Source: {}",
+                meta.len(),
+                src.display()
+            );
+        }
+    }
+
     std::fs::rename(&tmp, dst)?;
 
     Ok((orig_w, orig_h))
