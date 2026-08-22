@@ -111,7 +111,7 @@ function renderGrid() {
     // Folders
     for (const folder of currentAlbum.folders) {
         const card = document.createElement('div');
-        card.className = 'card';
+        card.className = 'card card-folder';
         const folderPathPrefix = folder.path ? encodePath(folder.path) + '/' : '';
         const thumbSrc = folder.cover ? `/photoalbum/${folderPathPrefix}${folder.cover}` : '';
         card.innerHTML = `
