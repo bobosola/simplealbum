@@ -113,7 +113,7 @@ function renderGrid() {
         const card = document.createElement('div');
         card.className = 'card';
         const folderPathPrefix = folder.path ? encodePath(folder.path) + '/' : '';
-        const thumbSrc = folder.cover ? `/photos/${folderPathPrefix}${folder.cover}` : '';
+        const thumbSrc = folder.cover ? `/photoalbum/${folderPathPrefix}${folder.cover}` : '';
         card.innerHTML = `
             <div class="thumb-wrap">
                 ${thumbSrc ? `<img src="${thumbSrc}" loading="lazy" alt="">` : '<div class="placeholder"></div>'}
@@ -132,7 +132,7 @@ function renderGrid() {
         const photo = currentAlbum.photos[i];
         const card = document.createElement('div');
         card.className = 'card';
-        const thumbSrc = `/photos/${encodePath(currentPath)}/${photo.thumb}`;
+        const thumbSrc = `/photoalbum/${encodePath(currentPath)}/${photo.thumb}`;
         const isVideo = photo.type === 'video';
         card.innerHTML = `
             <div class="thumb-wrap">
@@ -195,7 +195,7 @@ function renderViewerItem() {
     stopViewerVideo();
     const photo = currentAlbum.photos[currentViewerIndex];
     const content = document.getElementById('viewer-content');
-    const src = `/photos/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const src = `/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
     content.innerHTML = '';
     if (photo.type === 'video') {
         const video = document.createElement('video');
@@ -237,7 +237,7 @@ function hideViewer() {
 
 function viewerDownload() {
     const photo = currentAlbum.photos[currentViewerIndex];
-    const src = `/photos/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const src = `/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
     const a = document.createElement('a');
     a.href = src;
     a.download = photo.name;
@@ -246,7 +246,7 @@ function viewerDownload() {
 
 function viewerCopy() {
     const photo = currentAlbum.photos[currentViewerIndex];
-    const url = `${window.location.origin}/photos/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const url = `${window.location.origin}/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
     navigator.clipboard.writeText(url).then(() => showToast('Link copied'));
 }
 
