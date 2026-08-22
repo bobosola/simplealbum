@@ -1,6 +1,6 @@
 # Simple Album
 
-A fast, self-hosted photo album web application. Drop your photos into a folder tree, and Simple Album automatically generates thumbnails and serves them through a clean web interface. No databases to configure, no build pipelines, no JavaScript frameworks — just a single Rust binary and a vanilla JS frontend.
+A fast, self-hosted photo album web application. Drop your photos into a folder tree, and Simple Album automatically generates thumbnails and serves them through a clean web interface. No external database setup, no build pipelines, no JavaScript frameworks — just a single Rust binary and a vanilla JS frontend.
 
 - **Zero-configuration thumbnail generation** — images and videos are resized automatically on first access
 - **Folder covers** — pick any photo as the thumbnail for its parent folder (admin mode)
@@ -131,15 +131,29 @@ The worker pool limits concurrent jobs to your CPU's available parallelism (clam
 
 ---
 
+## Data Storage
+
+Simple Album uses an embedded **SQLite** database to cache photo dimensions and persist folder cover selections. SQLite was chosen over flat files (JSON, XML, etc.) because it provides indexed lookups, concurrent read/write access via WAL mode, and atomic updates — all without requiring a separate database server or manual file-locking logic.
+
 ## Logging
 
-Simple Album logs to the terminal (stdout/stderr) only — there is no log file. Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable:
+Simple Album logs to the terminal (stdout/stderr) only — there is no log file when run manually. Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable:
 
 ```bash
 SIMPLE_ALBUM_LOG=debug ./target/release/album
 ```
 
 Available levels: `trace`, `debug`, `info` (default), `warn`, `error`.
+
+When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured by your service manager:
+
+- **Linux (systemd)**: Use `journalctl` to read the log and find the auto-generated admin key:
+  ```bash
+  sudo journalctl -u album-service -f          # follow live output
+  sudo journalctl -u album-service --no-pager -n 50  # last 50 lines
+  ```
+- **macOS (launchd)**: Check `~/Library/Logs/album.log`
+- **Windows (NSSM)**: Check `C:\album-service\album.log`
 
 ---
 
