@@ -170,11 +170,12 @@ Then update the Caddy reverse proxy accordingly.
 
 ### Performance Considerations (10,000+ images)
 
-With a large collection, three measures are critical:
+With a large collection, four measures are critical:
 
 1. **Background thumbnail worker**: The service must never block startup or API requests on thumbnail generation. New and missing thumbnails are queued and processed asynchronously.
 2. **Recursive inotify watch**: A single recursive watch on the album root avoids Linux `fs.inotify.max_user_watches` limits (default ~8,192).
 3. **Image dimension cache**: Opening every image to read its width/height on every API call is prohibitively expensive. Dimensions are cached in SQLite (see [State Management](#state-management)).
+4. **Memory limits**: Each concurrent thumbnail job loads a fully decoded image into RAM. A 4032×3024 JPEG decodes to ~36 MB; with Lanczos3 resizing and multiple concurrent workers, peak memory can exceed 512 MB. When running under systemd, ensure `MemoryMax` is set high enough (e.g. `1G`) to avoid OOM kills that can leave partially-written or corrupted thumbnails.
 
 ---
 

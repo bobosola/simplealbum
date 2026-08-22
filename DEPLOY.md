@@ -119,6 +119,12 @@ ReadWritePaths=/var/album /var/lib/album
 ProtectSystem=strict
 ProtectHome=true
 
+> **Note on `MemoryMax`**: 512 MB is sufficient for typical collections. However, large images (e.g. 12 MP+ iPhone JPEGs at 4032×3024) decode to ~50–70 MB each in RAM. The thumbnail worker runs up to 8 concurrent jobs. If you see grey/corrupted thumbnails or OOM kills in `dmesg`, increase `MemoryMax` to `1G` or higher:
+> ```bash
+> sudo systemctl edit album-service
+> ```
+> Add `MemoryMax=1G` under `[Service]`, then `daemon-reload` and restart.
+
 [Install]
 WantedBy=multi-user.target
 ```
@@ -491,5 +497,7 @@ Bookmark this URL. The key is stored in your browser's `localStorage`. To revoke
 | "Address already in use" | Port 8080 occupied | Change `bind` in `album.toml` |
 | Photos appear sideways | Missing EXIF orientation | Already handled by `kamadak-exif` — ensure source images have EXIF |
 | High CPU on startup | Large backlog | Normal — the background worker processes files asynchronously |
+| Service restarts repeatedly / OOM-kill in `dmesg` | `MemoryMax=512M` exceeded by large image decodes | Increase `MemoryMax` to `1G` via `systemctl edit album-service` |
+| Grey or solid-colour thumbnails | Worker OOM-killed mid-generation, or rare `image` crate decode bug | Increase memory limit; if issue persists for specific files, pre-generate thumbs on another machine and copy them |
 | Service won't start on macOS | launchd plist syntax error | Run `plutil -lint com.album.service.plist` |
 | Service won't start on Windows | NSSM path error | Use full paths with double backslashes in NSSM |
