@@ -207,8 +207,43 @@ function renderViewerItem() {
         const img = document.createElement('img');
         img.src = src;
         img.alt = photo.name;
+        img.decoding = 'async';
         content.appendChild(img);
     }
+    preloadAdjacentImages();
+}
+
+function preloadAdjacentImages() {
+    if (!currentAlbum || currentAlbum.photos.length === 0) return;
+
+    const indices = [];
+    if (currentViewerIndex > 0) indices.push(currentViewerIndex - 1);
+    if (currentViewerIndex < currentAlbum.photos.length - 1) indices.push(currentViewerIndex + 1);
+
+    for (const idx of indices) {
+        const photo = currentAlbum.photos[idx];
+        if (photo.type === 'video') continue; // skip video preloading
+        const src = `/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+
+        // Use a hidden img element to force download + decode in the background
+        let preloader = document.getElementById(`preload-${idx}`);
+        if (!preloader) {
+            preloader = document.createElement('img');
+            preloader.id = `preload-${idx}`;
+            preloader.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;';
+            preloader.decoding = 'async';
+            document.body.appendChild(preloader);
+        }
+        preloader.src = src;
+    }
+
+    // Clean up preloaders that are no longer adjacent
+    const adjacentIds = new Set(indices.map(i => `preload-${i}`));
+    document.querySelectorAll('img[id^="preload-"]').forEach(el => {
+        if (!adjacentIds.has(el.id)) {
+            el.remove();
+        }
+    });
 }
 
 function viewerPrev() {
