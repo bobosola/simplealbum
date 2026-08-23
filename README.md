@@ -1,32 +1,42 @@
 # Simple Photo Album
 
-This is a self-hosted cross-platform web photo album application. It can be deployed either as a stand-alone photo album site or as part of another site. It serves photos and videos from a folder tree on your server which can be organised and named however you like. The folder tree need not be in the web site, it can be anywhere on your server. The application supports many thousands of image or video files. 
+This is a self-hosted cross-platform simple web photo album application. It's basically a web viewer for your existing image folders. It serves photos and videos from any folder tree on your server. These can be can be organised and named however you like. The application supports many thousands of image or video files. 
 
-Your files are served through a clean web interface ordered by the file and folder names as per the underlying folder tree. You can see a live example at [https://www.osola.org.uk/photos](https://www.osola.org.uk/photos) which has over 8,000 photos.
+Your files are served through a clean web interface ordered by the file and folder names as per the underlying folder tree. You can see a live example at [https://www.osola.org.uk/photos](https://www.osola.org.uk/photos) which has over 8,000 photos. 
 
 It's a single Rust binary with a static front end consisting of:
-
-- one vanilla JS file
 - one HTML file
 - one CSS file
+- one vanilla JS file
 
-You can edit the CSS and HTML files to your taste. No build step or framework is required. 
+You can deploy these in the site root as a stand-alone photo album site or in a subfolder such as `/photos` as a part of another site. Just edit the CSS and HTML files to your taste. No build step or framework is required.
 
 # Features
 
 Here's the main features:
 
-- **Read-only for your photos &amp; videos** — your image and video files are not touched or altered in any way
-- **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first upload in a `thumbs` folder within each folder and deleted when the parent image is deleted
-- **Simple admin mode to choose folder covers** — pick any photo as the thumbnail for its parent or grandparent folder
+- **Read-only for your photos &amp; videos** — your image and video files are not altered in any way
+- **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first upload in a `thumbs` folder within each image folder and deleted when the parent image is deleted
+- **Simple admin mode to choose folder thumbnails** — pick any photo as the thumbnail for its parent or grandparent folder
 - **Live filesystem watcher service** —  the site updates automatically as you add or remove photos
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
 - **Dark mode** — persisted automatic or manual toggle
+- **Sharing** — buttons for image URL copy and download are on the image view page
 - **Keyboard & swipe navigation** — standard keyboard navigation in the image viewer, with swipe left and right for touch screens
-- **Image pre-loading** — automatic next and previous image pre-loading to improve the user experience and avoid load lag which can otherwise occur (particularly on small screen devices)
+- **Image pre-loading** — automatic next and previous image pre-loading to improve the user experience and avoid load lag which can otherwise occur, particularly on small screen devices
 - **Browser history integration** — default browser back and forward actions work as expected
 - **Single binary** — one compiled executable, no runtime dependencies beyond FFmpeg
 - **SQLite backed state** — the cover photo choices and thumbnail metadata is held in a fully self-managed SQLite database (no user intervention, login, or maintenance is required)
+
+# Non-Features
+
+These features have been deliberately omitted. Use your favourite LLM to add them if you need them.
+
+- No ability to rename or reorder your photos — rename them alphabetically if you want to change the display order or name
+- No ability to allow different user perms — everyone can see all the photos
+- No intermediate (space-consuming) range of thumbnail sizes — you get just the default ones
+- No upload interface as these are generally slow and ponderous to use for large numbers of files — just use SFTP with [Filezilla](https://filezilla-project.org) or even good old `scp` to quickly upload your photos to your server
+- No image editing features
 
 ---
 
@@ -116,7 +126,7 @@ The startup log prints an admin URL like:
 Admin URL: https://your-domain.com/#admin=xxxxxxxxxxxx
 ```
 
-where the key value the value set in the `album.toml` file. Open that URL (or append `/#admin=...` to any page) to enter Admin mode. A star icon (⭐) will appear in the header. Click any photo's star icon to set it as a folder cover image. 
+where the key value is the value set in the `album.toml` file. Open that URL (or append `/#admin=...` to any page) to enter Admin mode. A star icon (⭐) will appear in the header. Click any photo's star icon to set it as a folder cover image. 
 
 For simplicity, the admin mode uses a hash-prefixed path rather than a GET string parameter or admin password login. The "path-with-hash" approach is a [URI fragment](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Fragment) which ensures that the key does not leave the browser and prevents it from being sent to a server, or stored externally, such as in server logs.
 
@@ -239,4 +249,4 @@ MIT
 
 ## Acknowledgements
 
-Simple Album was designed and orchestrated by me (Bob Osola) and built by the Kimi 2.6 coding agent. The documentation was originally written by Kimi and later humanised by me.
+Simple Album was designed and directed by me (Bob Osola) and built by the Kimi 2.6 coding agent. The documentation was originally written by Kimi but humanised by me.
