@@ -1,6 +1,6 @@
 # Simple Photo Album
 
-This is a self-hosted cross-platform simple web photo album application. It's basically a web viewer for your existing image folders. It serves photos and videos from any folder tree on your server. These can be can be organised and named however you like. The application supports many thousands of image or video files. 
+This is a self-hosted cross-platform simple web photo album application. It's basically a web viewer for your existing image folders. It serves photos and videos from any folder tree on your server. These can be organised and named however you like. The application supports many thousands of image or video files. 
 
 Your files are served through a clean web interface ordered by the file and folder names as per the underlying folder tree. You can see a live example at [https://www.osola.org.uk/photos](https://www.osola.org.uk/photos) which has over 8,000 photos. 
 
@@ -13,10 +13,10 @@ You can deploy these in the site root as a stand-alone photo album site or in a 
 
 # Features
 
-Here's the main features:
+Here's what's included:
 
-- **Read-only for your photos &amp; videos** — your image and video files are not altered in any way
-- **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first upload in a `thumbs` folder within each image folder and deleted when the parent image is deleted
+- **Read-only for your photos & videos** — your image and video files are not altered in any way
+- **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first detection in a `thumbs` folder within each image folder and deleted when the parent image is deleted
 - **Simple admin mode to choose folder thumbnails** — pick any photo as the thumbnail for its parent or grandparent folder
 - **Live filesystem watcher service** —  the site updates automatically as you add or remove photos
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
@@ -54,6 +54,31 @@ These features have been deliberately omitted. Use your favourite LLM to add the
 
 ---
 
+## How it works
+
+**On startup (one-time background scan):**
+`scan_existing()` in `worker.rs` walks the entire photo tree recursively to find images that need thumbnails generated. But this is just a flat queue of jobs — it doesn't build a tree data structure, and it doesn't persist any directory hierarchy. Once the initial scan finishes, it's done. 
+
+**At runtime**, the watcher detects new files within seconds (FSEvents has ~1 second coalescing delay on macOS; inotify is near-instant on Linux). The thumbnail appears automatically after the worker finishes.
+
+**On every API call (`GET /api/album`):**
+`get_album()` in `api.rs` reads **only the single folder** being requested. It doesn't recurse. It just lists the immediate children of (say) `/var/album/2020-29/2026` or whatever path you asked for, checks which are folders vs media files, and returns them.
+
+**The one bit of recursion that does happen:**
+For each subfolder shown in the grid, the API walks each subfolder to count totals for the badge text (e.g. "12 photos, 1 album"). But it doesn't build a tree; it just counts and returns numbers.
+
+**In short:**
+- No persistent directory tree in memory
+- No tree in the database (SQLite only stores cover choices and image dimensions)
+- Each page load triggers exactly one `readdir` on the folder you're viewing
+- The filesystem itself *is* the directory tree — the app reads it live on every request
+
+This is by design. It means the gallery is always consistent with the filesystem. Add a folder on disk, refresh the page, it appears immediately. No sync step, no cache invalidation.
+
+The web server handles URL map pathing (as put together by the processes described above) then retrieves and serves the requested image files, if they exist.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -76,12 +101,12 @@ The binary appears at `./target/release/album`.
 
 ### Create a config file
 
-On first startup, Simple Album creates a default config if none exists. You can also create one manually:
+On first startup, Simple Album creates a default config if none exists. You may need to create one manually on your live server depending on write perms:
 
 ```toml
 # API bind address and port
 [server]
-bind = "127.0.0.1:18080"
+bind = "127.0.0.1:8080"
 
 # Root of the photo tree
 [album]
@@ -152,7 +177,7 @@ Simple Album is designed to work with any reverse proxy or web server:
 
 1. Serve `static/index.html`, `static/style.css`, and `static/app.js` at `/`
 2. Proxy `/api/*` to the Rust backend
-3. Serve `/photos/*` from your album root directory
+3. Serve `/photoalbum/*` from your album root directory
 
 A sample `Caddyfile.local` is included for local development with self-signed TLS.
 
@@ -178,7 +203,7 @@ Simple Album uses an embedded **SQLite** database to cache photo dimensions and 
 
 ## Logging
 
-Simple Album logs to the terminal (stdout/stderr) only — there is no log file when run manually. When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured by your service manager log. 
+Simple Album logs to the terminal (stdout/stderr) only — there is no log file when run manually. When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured as described below. 
 
 Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable:
 
@@ -188,7 +213,7 @@ SIMPLE_ALBUM_LOG=debug ./target/release/album
 
 Available levels: `trace`, `debug`, `info` (default), `warn`, `error`.
 
-When running as a system service (see [`DEPLOY.md`](DEPLOY.md)) you can view the log thus:
+When running as a system service (see [`DEPLOY.md`](DEPLOY.md)) you can view the log as follows:
 
 - **Linux (systemd)**: Use `journalctl` to read the log and find the admin URL:
   ```bash
