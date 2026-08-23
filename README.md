@@ -4,7 +4,13 @@ This is a self-hosted cross-platform web photo album application. It can be depl
 
 Your files are served through a clean web interface ordered by the file and folder names as per the underlying folder tree. You can see a live example at [https://www.osola.org.uk/photos](https://www.osola.org.uk/photos) which has over 8,000 photos.
 
-It's a single Rust binary with a static front end consisting of one vanilla JS file, one HTML file, and one CSS file which you can edit to your taste. No build step or framework is required. 
+It's a single Rust binary with a static front end consisting of:
+
+- one vanilla JS file
+- one HTML file
+- one CSS file
+
+You can edit the CSS and HTML files to your taste. No build step or framework is required. 
 
 # Features
 
@@ -16,9 +22,10 @@ Here's the main features:
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
 - **Dark mode** — persisted automatic or manual toggle
 - **Keyboard & swipe navigation** — standard keyboard navigation in the image viewer, with swipe left and right for touch screens
-- **Browser history integration** — back and forward buttons work as expected
+- **Image pre-loading** — automatic next and previous image pre-loading to improve the user experience and avoid load lag which can otherwise occur (particularly on small screen devices)
+- **Browser history integration** — default browser back and forward actions work as expected
 - **Single binary** — one compiled executable, no runtime dependencies beyond FFmpeg
-- **SQLite backed state** — the cover photo choices and thumbnail metadata is held in a fully self-managed SQLite database (no user intervention or login is required)
+- **SQLite backed state** — the cover photo choices and thumbnail metadata is held in a fully self-managed SQLite database (no user intervention, login, or maintenance is required)
 
 ---
 
@@ -43,7 +50,7 @@ Here's the main features:
 - [Rust](https://rustup.rs/) (to build from source)
 - [FFmpeg](https://ffmpeg.org/download.html) — must be on your `PATH` for video thumbnails
 - Any modern web browser
-- Any reverse proxy or web server that supports reverse proxying (see Architecture below)
+- Any web server that supports reverse proxying (see Architecture below)
 - The ability to set up the binary as a service application on your server (described in detail in the Deploy docs).
 
 ### Build
@@ -98,7 +105,7 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/a
 
 The backend listens on `127.0.0.1:8080` by default. For a complete setup with TLS and static file serving, place a reverse proxy in front. See the Architecture section below.
 
-### Admin mode: 
+### Simple Admin mode for cover images: 
 
 The startup log prints an admin URL like:
 
@@ -106,9 +113,9 @@ The startup log prints an admin URL like:
 Admin URL: https://your-domain.com/#admin=xxxxxxxxxxxx
 ```
 
-where the key value the value set in the `album.toml` file. Open that URL (or append `#admin=...` to any page). A star icon (⭐) appears in the header. Click any photo's star overlay to set it as a folder cover. 
+where the key value the value set in the `album.toml` file. Open that URL (or append `/#admin=...` to any page) to enter Admin mode. A star icon (⭐) will appear in the header. Click any photo's star icon to set it as a folder cover image. 
 
-For simplicity, the admin mode has a hash-prefixed path rather than a GET string parameter (or admin password login). The "path-with-hash" approach is a *fragment identifier* which ensure that the key does not leave the browser and prevents it from being sent to a server and stored externally or in server logs.
+For simplicity, the admin mode uses a hash-prefixed path rather than a GET string parameter or admin password login. The "path-with-hash" approach is a [URI fragment](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Fragment) which ensure that the key does not leave the browser and prevents it from being sent to a server, or stored externally such as in server logs.
 
 ---
 
@@ -201,7 +208,7 @@ Config search order (if `SIMPLE_ALBUM_CONFIG` is not set):
 
 ---
 
-## What's NOT in this repo
+## Not included in the repo
 
 - **Test images** — the repo does not include any sample photos. Create your own `testdata/` folder or point the config at an existing photo collection.
 - **Database files** — `album.db`, `album.db-wal`, and `album.db-shm` are generated at runtime. Do not commit them.
@@ -224,3 +231,8 @@ See `DEPLOY.md` for per-platform service installation instructions.
 ## License
 
 MIT
+
+## Acknowledgements
+
+Simple Album was  designed and orchestrated by me and built by the Kimi 2.6 coding agent.
+
