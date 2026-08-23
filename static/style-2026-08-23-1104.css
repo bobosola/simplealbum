@@ -4,7 +4,7 @@
     --accent: #0d9488;
     --accent2: #d97706;
     --card-bg: #ffffff;
-    --card-folder-bg: #f0fdfa;
+    --card-folder-bg: #e0f2f1;
     --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
     --header-bg: #ffffff;
     --border: #e5e5e5;
@@ -19,7 +19,7 @@
     --accent: #2dd4bf;
     --accent2: #fbbf24;
     --card-bg: #1e293b;
-    --card-folder-bg: #162032;
+    --card-folder-bg: #115e59;
     --card-shadow: 0 1px 3px rgba(0,0,0,0.3);
     --header-bg: #1e293b;
     --border: #334155;
@@ -136,21 +136,6 @@ header h1 {
 
 .card-folder {
     background: var(--card-folder-bg);
-}
-
-.card-folder .thumb-wrap::after {
-    content: '\1F4C1';
-    position: absolute;
-    top: 6px;
-    left: 6px;
-    font-size: 16px;
-    background: #fbbf24;
-    color: #1a1a1a;
-    border-radius: 0.375rem;
-    padding: 3px 6px;
-    line-height: 1;
-    pointer-events: none;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
 .card .thumb-wrap {

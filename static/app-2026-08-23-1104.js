@@ -368,6 +368,35 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeViewer();
 });
 
+// Swipe navigation (mobile)
+(function initSwipe() {
+    const content = document.getElementById('viewer-content');
+    let startX = 0;
+    let startY = 0;
+    const threshold = 50;
+
+    content.addEventListener('touchstart', e => {
+        startX = e.changedTouches[0].screenX;
+        startY = e.changedTouches[0].screenY;
+    }, { passive: true });
+
+    content.addEventListener('touchend', e => {
+        const endX = e.changedTouches[0].screenX;
+        const endY = e.changedTouches[0].screenY;
+        const dx = endX - startX;
+        const dy = endY - startY;
+
+        // Only act on clear horizontal swipes
+        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > threshold) {
+            if (dx < 0) {
+                viewerNext();   // swipe left → next
+            } else {
+                viewerPrev();   // swipe right → previous
+            }
+        }
+    }, { passive: true });
+})();
+
 // Event bindings
 document.getElementById('viewer-close').addEventListener('click', closeViewer);
 document.getElementById('viewer-up').addEventListener('click', () => {
