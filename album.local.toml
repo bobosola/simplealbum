@@ -1,11 +1,17 @@
+# API bind address and port
 [server]
-bind = "127.0.0.1:18080"
+bind = "127.0.0.1:8080"
 
+# Root of the photo tree
 [album]
 root = "/Users/bobosola/photos"
 
+# SQLite database location
 [state]
 db_path = "/Users/bobosola/Sites/simplealbum/album.db"
 
+# Change this to your own secure value before deploying.
+# Leaving it empty causes the service to try to write back to this file on
+# first startup, which will fail if the config directory is read-only.
 [admin]
-key = "luzCdn5CvFAAhaANY6IQiU3KK-2a8bzfphGWVUUPLsk"
+key = "REPLACE-WITH-YOUR-OWN-KEY"
