@@ -33,7 +33,7 @@ The frontend is plain HTML, CSS, and vanilla JavaScript (ES2020+). No frameworks
 
 ### Why this split?
 
-- **Caddy** handles TLS, static file serving, and reverse proxying. It is excellent at this.
+- **Caddy** handles TLS, static file serving, and reverse proxying.
 - **Rust** handles the dynamic work: watching the filesystem, resizing images, and maintaining metadata. Keeping this as a separate service avoids embedding a web framework into Caddy or writing Caddy modules.
 - **Cross-platform**: The entire Rust backend compiles on Linux (Debian), macOS, and Windows with zero conditional compilation. The `notify` crate abstracts the OS-specific watcher APIs. Default config paths adapt per platform via the `dirs` crate.
 
