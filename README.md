@@ -16,9 +16,10 @@ You can edit the CSS and HTML files to your taste. No build step or framework is
 
 Here's the main features:
 
-- **Automatic thumbnail generation** — images and videos are created and sized automatically on first upload (and deleted when the parent image is deleted)
+- **Read-only for your photos &amp; videos** — your image and video files are not touched or altered in any way
+- **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first upload in a `thumbs` folder within each folder and deleted when the parent image is deleted
 - **Simple admin mode to choose folder covers** — pick any photo as the thumbnail for its parent or grandparent folder
-- **Live filesystem watcher** —  the site updates automatically as you add or remove photos
+- **Live filesystem watcher service** —  the site updates automatically as you add or remove photos
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
 - **Dark mode** — persisted automatic or manual toggle
 - **Keyboard & swipe navigation** — standard keyboard navigation in the image viewer, with swipe left and right for touch screens
@@ -115,7 +116,7 @@ Admin URL: https://your-domain.com/#admin=xxxxxxxxxxxx
 
 where the key value the value set in the `album.toml` file. Open that URL (or append `/#admin=...` to any page) to enter Admin mode. A star icon (⭐) will appear in the header. Click any photo's star icon to set it as a folder cover image. 
 
-For simplicity, the admin mode uses a hash-prefixed path rather than a GET string parameter or admin password login. The "path-with-hash" approach is a [URI fragment](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Fragment) which ensure that the key does not leave the browser and prevents it from being sent to a server, or stored externally such as in server logs.
+For simplicity, the admin mode uses a hash-prefixed path rather than a GET string parameter or admin password login. The "path-with-hash" approach is a [URI fragment](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Fragment) which ensures that the key does not leave the browser and prevents it from being sent to a server, or stored externally, such as in server logs.
 
 ---
 
@@ -234,5 +235,4 @@ MIT
 
 ## Acknowledgements
 
-Simple Album was  designed and orchestrated by me and built by the Kimi 2.6 coding agent.
-
+Simple Album was designed and orchestrated by me (Bob Osola) and built by the Kimi 2.6 coding agent. The documentation was written by Kimi and humanised by me.

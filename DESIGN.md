@@ -14,11 +14,11 @@ The frontend is plain HTML, CSS, and vanilla JavaScript (ES2020+). No frameworks
 
 ```
 ┌─────────────┐     ┌──────────────────────────────────────┐
-│   Browser   │────▶│  Caddy (port 443)                    │
-└─────────────┘     │  • Static files: / → static/         │
-                    │  • Photos:     /photos/* → album/    │
-                    │  • API:       /api/* → localhost:8080│
-                    └──────────────────────────────────────┘
+│   Browser   │────▶│  Caddy (port 443)                       │
+└─────────────┘     │  • Static files: / → static/            │
+                    │  • Photos:     /photoalbum/* → album/   │
+                    │  • API:       /api/* → localhost:8080   │
+                    └─────────────────────────────────────---─┘
                                          │
                                          ▼
                               ┌────────────────────┐
@@ -322,7 +322,7 @@ The user checks whichever folders should use this image as their cover, then con
   - **▶ Next**: next item in current folder's filename order.
   - **▲ Up**: return to the parent album grid.
 - **Actions**:
-  - **Download**: direct link to `/photos/<path>/<file>`.
+  - **Download**: direct link to `/photoalbum/<path>/<file>`.
   - **Copy Link**: copies the direct media URL to clipboard.
 
 ### Colour Scheme (Fresh, Modern)

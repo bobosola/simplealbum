@@ -22,7 +22,7 @@ static/style.css
 static/app.js
 ```
 
-**NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-2026-08-23-1430.js` and `style-2026-08-23-1430.css` . Ensure that all references to these files are updated accordingly.
+**NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-2026-08-23-1526.js` and `style-2026-08-23-1526.css` . Ensure that all references to these files are updated accordingly.
 
 Build from source (requires [Rust](https://rustup.rs)):
 
