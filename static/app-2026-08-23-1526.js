@@ -1,4 +1,11 @@
+/* 
+   NB: API_BASE and PHOTO_BASE are virtual path names handled by the web server
+   and translated into the real paths to the application server and the photos 
+   folder tree respectively. If these names clash with any existing real folder 
+   names on the website then change them here AND in the web server configuration file.
+*/
 const API_BASE = '/api';
+const PHOTO_BASE = '/photoalbum'; 
 
 let currentPath = '';
 let currentAlbum = null;
@@ -113,7 +120,7 @@ function renderGrid() {
         const card = document.createElement('div');
         card.className = 'card card-folder';
         const folderPathPrefix = folder.path ? encodePath(folder.path) + '/' : '';
-        const thumbSrc = folder.cover ? `/photoalbum/${folderPathPrefix}${folder.cover}` : '';
+        const thumbSrc = folder.cover ? `${PHOTO_BASE}/${folderPathPrefix}${folder.cover}` : '';
         card.innerHTML = `
             <div class="thumb-wrap">
                 ${thumbSrc ? `<img src="${thumbSrc}" loading="lazy" alt="">` : '<div class="placeholder"></div>'}
@@ -132,7 +139,7 @@ function renderGrid() {
         const photo = currentAlbum.photos[i];
         const card = document.createElement('div');
         card.className = 'card';
-        const thumbSrc = `/photoalbum/${encodePath(currentPath)}/${photo.thumb}`;
+        const thumbSrc = `${PHOTO_BASE}/${encodePath(currentPath)}/${photo.thumb}`;
         const isVideo = photo.type === 'video';
         card.innerHTML = `
             <div class="thumb-wrap">
@@ -195,7 +202,7 @@ function renderViewerItem() {
     stopViewerVideo();
     const photo = currentAlbum.photos[currentViewerIndex];
     const content = document.getElementById('viewer-content');
-    const src = `/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const src = `${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
     content.innerHTML = '';
     if (photo.type === 'video') {
         const video = document.createElement('video');
@@ -223,7 +230,7 @@ function preloadAdjacentImages() {
     for (const idx of indices) {
         const photo = currentAlbum.photos[idx];
         if (photo.type === 'video') continue; // skip video preloading
-        const src = `/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+        const src = `${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
 
         // Use a hidden img element to force download + decode in the background
         let preloader = document.getElementById(`preload-${idx}`);
@@ -272,7 +279,7 @@ function hideViewer() {
 
 function viewerDownload() {
     const photo = currentAlbum.photos[currentViewerIndex];
-    const src = `/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const src = `${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
     const a = document.createElement('a');
     a.href = src;
     a.download = photo.name;
@@ -281,7 +288,7 @@ function viewerDownload() {
 
 function viewerCopy() {
     const photo = currentAlbum.photos[currentViewerIndex];
-    const url = `${window.location.origin}/photoalbum/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const url = `${window.location.origin}${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
     navigator.clipboard.writeText(url).then(() => showToast('Link copied'));
 }
 
