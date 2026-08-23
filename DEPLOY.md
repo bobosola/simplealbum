@@ -22,6 +22,8 @@ static/style.css
 static/app.js
 ```
 
+**NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-2026-08-23-1104.js` and `style-2026-08-23-1104.css` . Ensure that all references to these files are updated accordingly.
+
 Build from source (requires [Rust](https://rustup.rs)):
 
 ```bash
@@ -32,6 +34,12 @@ cargo build --release
 The binary appears at `target/release/album` (Linux/macOS) or `target\release\album.exe` (Windows).
 
 ---
+
+# Copying from a dev server
+
+If you have built and tested the application on a dev server, you can save time on the live server by copying over the photos, thumbnails, and SQLite files from dev. However, if dev and live are on different platorms then you will of course have to recompile the application binary for the dev platform's architecture. All the other files can be copied over with path changes made where appropriate  in the `album.toml` file.
+
+# Creating from Scratch
 
 ## Part 1 — Linux (Debian / Ubuntu)
 
@@ -68,20 +76,29 @@ sudo chmod +x /usr/local/bin/album-service
 Create `/etc/album/album.toml`:
 
 ```toml
+# API bind address and port
 [server]
 bind = "127.0.0.1:8080"
 
+# Root of the photo tree
 [album]
 root = "/var/album"
 
+# SQLite database location
 [state]
 db_path = "/var/lib/album/album.db"
 
+# Change this to your own secure value before deploying.
+# Leaving it empty causes the service to try to write back to this file on
+# first startup, which will fail if the config directory is read-only.
 [admin]
-key = ""
+key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
 
-Leave `key` empty. The service generates one on first startup and writes it back. Check the logs for the admin URL.
+Generate a secure key locally and paste it here before deploying:
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
 
 ### 1.5 Create the `album` User
 
@@ -153,7 +170,7 @@ album.example.com {
     reverse_proxy /api/* localhost:8080
 
     # Photos and thumbnails
-    handle_path /photos/* {
+    handle_path /photoalbum/* {
         root * /var/album
         file_server
     }
@@ -182,7 +199,7 @@ curl -s https://album.example.com/api/health
 curl -s "https://album.example.com/api/album?path="
 ```
 
-Add a photo to `/var/album/1970-79/1970/` and refresh the page — the thumbnail should appear within seconds.
+Add a photo to (say) `/var/album/1970-79/1970/` and refresh the page — the thumbnail should appear within seconds.
 
 ---
 
@@ -222,20 +239,29 @@ cp -r static/* ~/Sites/album-static/
 Create `~/Library/Application Support/album/album.toml`:
 
 ```toml
+# API bind address and port
 [server]
 bind = "127.0.0.1:8080"
 
+# Root of the photo tree
 [album]
 root = "/Users/YOUR_USERNAME/album"
 
+# SQLite database location
 [state]
 db_path = "/Users/YOUR_USERNAME/Library/Application Support/album/db/album.db"
 
+# Change this to your own secure value before deploying.
+# Leaving it empty causes the service to try to write back to this file on
+# first startup, which will fail if the config directory is read-only.
 [admin]
-key = ""
+key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
 
-Replace `YOUR_USERNAME` with your actual macOS username.
+Replace `YOUR_USERNAME` with your actual macOS username. Generate a secure key with:
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
 
 ### 2.5 launchd Service
 
@@ -302,7 +328,7 @@ To run as a system daemon (for all users), move the plist to `/Library/LaunchDae
 If you installed Caddy via Homebrew, create a Caddyfile in your project directory:
 
 ```caddyfile
-localhost:8443 {
+localhost {
     tls internal
 
     root * /Users/YOUR_USERNAME/Sites/album-static
@@ -310,7 +336,7 @@ localhost:8443 {
 
     reverse_proxy /api/* localhost:8080
 
-    handle_path /photos/* {
+    handle_path /photoalbum/* {
         root * /Users/YOUR_USERNAME/album
         file_server
     }
@@ -373,20 +399,30 @@ Copy-Item -Recurse "static\*" "C:\album-static\"
 Create `$env:APPDATA\album\album.toml` ( resolves to `C:\Users\YOURNAME\AppData\Roaming\album\album.toml`):
 
 ```toml
+# API bind address and port
 [server]
 bind = "127.0.0.1:8080"
 
+# Root of the photo tree
 [album]
 root = "C:\\album"
 
+# SQLite database location
 [state]
 db_path = "C:\\Users\\YOURNAME\\AppData\\Roaming\\album\\db\\album.db"
 
+# Change this to your own secure value before deploying.
+# Leaving it empty causes the service to try to write back to this file on
+# first startup, which will fail if the config directory is read-only.
 [admin]
-key = ""
+key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
 
-Use **double backslashes** (`\\`) in TOML string values, or use forward slashes (`/`) which Rust also accepts on Windows.
+Use **double backslashes** (`\\`) in TOML string values, or use forward slashes (`/`) which Rust also accepts on Windows. Generate a secure key with:
+```powershell
+# PowerShell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]]) -replace '\+','-' -replace '/','_' -replace '=',''
+```
 
 ### 3.5 NSSM Service Wrapper
 
@@ -450,7 +486,7 @@ localhost:8443 {
 
     reverse_proxy /api/* localhost:8080
 
-    handle_path /photos/* {
+    handle_path /photoalbum/* {
         root * C:\album
         file_server
     }
@@ -465,7 +501,7 @@ caddy run --config C:\album-service\Caddyfile
 
 Open `https://localhost:8443` and accept the certificate warning.
 
-### 3.8 Notes on Windows
+### 3.8 Notes on Windows (untested)
 
 - **File locking**: Windows locks files while they are being read. If you try to move a photo while the thumbnail worker has it open, the move may fail temporarily. The worker releases files quickly, so retrying usually succeeds.
 - **PATH handling**: Make sure `ffmpeg.exe` and `ffprobe.exe` are on the system PATH, not just the user PATH, if running as a service under a different account.
@@ -476,15 +512,23 @@ Open `https://localhost:8443` and accept the certificate warning.
 
 ## Admin Key Management
 
-On first startup, the service generates a 32-byte random admin key and writes it to the config file. Check the service logs for:
+Set a secure admin key in `album.toml` **before** first startup. The service does not auto-generate one — it expects a pre-configured value so it never needs write access to the config directory at runtime.
 
+Generate a key locally:
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+Paste the output into `album.toml` under `[admin] key = "..."`.
+
+On startup the service logs the admin URL:
 ```
 Admin URL: https://your-domain.com/#admin=xxxxxxxxxxxx
 ```
 
 Bookmark this URL. The key is stored in your browser's `localStorage`. To revoke access:
 
-1. Edit the config file and change `key` to a new value, or delete it to auto-regenerate.
+1. Edit the config file and change `key` to a new value.
 2. Restart the service.
 3. All existing browser sessions lose admin access.
 

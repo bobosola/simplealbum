@@ -443,7 +443,7 @@ album.example.com {
     reverse_proxy /api/* localhost:8080
 
     # Photos and thumbnails (direct static serving)
-    handle_path /photos/* {
+    handle_path /photoalbum/* {
         root * /var/album
         file_server
     }

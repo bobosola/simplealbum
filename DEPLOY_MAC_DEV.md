@@ -1,6 +1,6 @@
 # macOS Local Development Testing Guide
 
-This guide covers running the Album photo service locally on a Mac for development and testing. No Docker, no systemd, no production hardening — just the binary, a local config, and Caddy.
+This guide covers running the Album photo service locally on a Mac for development and testing. No production hardening — just the binary, a local config, and Caddy.
 
 ---
 
@@ -39,7 +39,7 @@ The binary is produced at `./target/release/album`.
 
 ## 2. Create Test Photo Tree
 
-Create some sample folders under your configured album root (`/Users/bobosola/photos`):
+Create some sample folders under your configured album root, e.g.:
 
 ```
 /Users/bobosola/photos/
@@ -78,20 +78,26 @@ You can add or remove photos at any time while the service is running.
 A pre-made local config exists at `album.local.toml`:
 
 ```toml
+# API bind address and port
 [server]
 bind = "127.0.0.1:18080"
 
+# Root of the photo tree
 [album]
 root = "/Users/bobosola/photos"
 
+# SQLite database location
 [state]
 db_path = "/Users/bobosola/Sites/simplealbum/album.db"
 
+# Change this to your own secure value before deploying.
+# Leaving it empty causes the service to try to write back to this file on
+# first startup, which will fail if the config directory is read-only.
 [admin]
-key = ""
+key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
 
-On first startup the service will generate an admin key and write it back into this file. If you want a completely fresh start, delete the database files first:
+Set a secure admin key in this file before starting the service. If you want a completely fresh start, delete the database files first:
 
 ```bash
 rm -f album.db album.db-shm album.db-wal
@@ -109,7 +115,7 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/simplealbum/albu
 ```
 
 **What this does:**
-- `SIMPLE_ALBUM_LOG=info` — Shows startup messages, file scan progress, and the generated admin key.
+- `SIMPLE_ALBUM_LOG=info` — Shows startup messages, file scan progress, and the admin URL.
 - `SIMPLE_ALBUM_CONFIG=...` — Forces the service to read your local test config instead of searching system paths.
 - `./target/release/album` — Runs the compiled binary.
 
@@ -157,7 +163,7 @@ localhost:8443 {
     reverse_proxy /api/* localhost:18080
 
     # Photos and thumbnails
-    handle_path /photos/* {
+    handle_path /photoalbum/* {
         root * /Users/bobosola/photos
         file_server
     }

@@ -1,15 +1,24 @@
-# Simple Album
+# Simple Photo Album
 
-A fast, self-hosted photo album web application. Drop your photos into a folder tree, and Simple Album automatically generates thumbnails and serves them through a clean web interface. No external database setup, no build pipelines, no JavaScript frameworks — just a single Rust binary and a vanilla JS frontend.
+This is a self-hosted cross-platform web photo album application. It can be deployed either as a stand-alone photo album site or as part of another site. It serves photos and videos from a folder tree on your server which can be organised and named however you like. The folder tree need not be in the web site, it can be anywhere on your server. The application supports many thousands of image or video files. 
 
-- **Zero-configuration thumbnail generation** — images and videos are resized automatically on first access
-- **Folder covers** — pick any photo as the thumbnail for its parent folder (admin mode)
-- **Live filesystem watcher** — add or remove photos at any time; the grid updates automatically
+Your files are served through a clean web interface ordered by the file and folder names as per the underlying folder tree. You can see a live example at [https://www.osola.org.uk/photos](https://www.osola.org.uk/photos) which has over 8,000 photos.
+
+It's a single Rust binary with a static front end consisting of one vanilla JS file, one HTML file, and one CSS file which you can edit to your taste. No build step or framework is required. 
+
+# Features
+
+Here's the main features:
+
+- **Automatic thumbnail generation** — images and videos are created and sized automatically on first upload (and deleted when the parent image is deleted)
+- **Simple admin mode to choose folder covers** — pick any photo as the thumbnail for its parent or grandparent folder
+- **Live filesystem watcher** —  the site updates automatically as you add or remove photos
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
-- **Dark mode** — automatic or manual toggle, persisted in localStorage
-- **Keyboard navigation** — arrow keys and Escape in the image viewer
-- **Browser history integration** — back/forward buttons work within the SPA
+- **Dark mode** — persisted automatic or manual toggle
+- **Keyboard & swipe navigation** — standard keyboard navigation in the image viewer, with swipe left and right for touch screens
+- **Browser history integration** — back and forward buttons work as expected
 - **Single binary** — one compiled executable, no runtime dependencies beyond FFmpeg
+- **SQLite backed state** — the cover photo choices and thumbnail metadata is held in a fully self-managed SQLite database (no user intervention or login is required)
 
 ---
 
@@ -23,8 +32,7 @@ A fast, self-hosted photo album web application. Drop your photos into a folder 
 > **HEIC/HEIF (iPhone default)** is **not supported**. Before importing from an iPhone or iPad, convert to JPEG:
 >
 > - **iPhone/iPad**: Select photos → Share → Save to Files — the Files app automatically exports as JPEG.
-> - **iPhone/iPad (permanent fix)**: Settings → Camera → Formats → Choose **"Most Compatible"** — future photos will be saved as JPEG.
-> - **Mac**: Select photos in the Photos app → File → Export → Export Unmodified Originals (or use Image Capture, which exports JPEG by default).
+> - **Mac**: Select photos in the Photos app → File → Export → Export Unmodified Originals
 
 ---
 
@@ -36,6 +44,7 @@ A fast, self-hosted photo album web application. Drop your photos into a folder 
 - [FFmpeg](https://ffmpeg.org/download.html) — must be on your `PATH` for video thumbnails
 - Any modern web browser
 - Any reverse proxy or web server that supports reverse proxying (see Architecture below)
+- The ability to set up the binary as a service application on your server (described in detail in the Deploy docs).
 
 ### Build
 
@@ -50,28 +59,36 @@ The binary appears at `./target/release/album`.
 On first startup, Simple Album creates a default config if none exists. You can also create one manually:
 
 ```toml
+# API bind address and port
 [server]
 bind = "127.0.0.1:18080"
 
+# Root of the photo tree
 [album]
 root = "/path/to/your/photos"
 
+# SQLite database location
 [state]
 db_path = "/path/to/album.db"
 
+# Change this to your own secure value before deploying.
+# Leaving it empty causes the service to try to write back to this file on
+# first startup, which will fail if the config directory is read-only.
 [admin]
-key = ""
+key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
 
-Leave `admin.key` empty — a secure key is auto-generated on first startup and printed to the logs.
+Set `admin.key` to a secure value before starting — the service reads it from the config and does not write back to the file.
 
 ### Run
+
+For local testing and debugging, set the logging level environment variable and run the app in one command thus:
 
 ```bash
 SIMPLE_ALBUM_LOG=info ./target/release/album
 ```
 
-Or point to a specific config:
+Or optionally point to a specific config file:
 
 ```bash
 SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/album
@@ -79,21 +96,25 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/a
 
 ### View in browser
 
-The backend listens on `127.0.0.1:18080` by default. For a complete setup with TLS and static file serving, place a reverse proxy in front. See the Architecture section below.
+The backend listens on `127.0.0.1:8080` by default. For a complete setup with TLS and static file serving, place a reverse proxy in front. See the Architecture section below.
 
-**Admin mode**: The startup log prints an admin URL like:
+### Admin mode: 
+
+The startup log prints an admin URL like:
 
 ```
 Admin URL: https://your-domain.com/#admin=xxxxxxxxxxxx
 ```
 
-Open that URL (or append `#admin=...` to any page). A star icon (⭐) appears in the header. Click any photo's star overlay to set it as a folder cover.
+where the key value the value set in the `album.toml` file. Open that URL (or append `#admin=...` to any page). A star icon (⭐) appears in the header. Click any photo's star overlay to set it as a folder cover. 
+
+For simplicity, the admin mode has a hash-prefixed path rather than a GET string parameter (or admin password login). The "path-with-hash" approach is a *fragment identifier* which ensure that the key does not leave the browser and prevents it from being sent to a server and stored externally or in server logs.
 
 ---
 
 ## Architecture
 
-Simple Album is designed to work with **any** reverse proxy or web server:
+Simple Album is designed to work with any reverse proxy or web server:
 
 ```
 ┌─────────┐     ┌─────────────────────────────┐     ┌──────────────────┐
@@ -119,7 +140,7 @@ A sample `Caddyfile.local` is included for local development with self-signed TL
 
 ## Performance
 
-On an Apple M4 Mac Mini, generating **8,200+ thumbnails from scratch** takes approximately **1 minute 40 seconds** (~86 images/second). Thumbnails are generated in the background on startup; the web UI is available immediately and populates progressively.
+On an Apple M4 Mac Mini, generating **8,200+ thumbnails from scratch** took approximately **1 minute 40 seconds** (~86 images/second). Thumbnails are generated in the background on startup; the web UI is available immediately and populates progressively.
 
 | Metric | Value |
 |---|---|
@@ -147,7 +168,7 @@ Available levels: `trace`, `debug`, `info` (default), `warn`, `error`.
 
 When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured by your service manager:
 
-- **Linux (systemd)**: Use `journalctl` to read the log and find the auto-generated admin key:
+- **Linux (systemd)**: Use `journalctl` to read the log and find the admin URL:
   ```bash
   sudo journalctl -u album-service -f          # follow live output
   sudo journalctl -u album-service --no-pager -n 50  # last 50 lines
@@ -180,7 +201,7 @@ Config search order (if `SIMPLE_ALBUM_CONFIG` is not set):
 
 ---
 
-## What's NOT in this repository
+## What's NOT in this repo
 
 - **Test images** — the repo does not include any sample photos. Create your own `testdata/` folder or point the config at an existing photo collection.
 - **Database files** — `album.db`, `album.db-wal`, and `album.db-shm` are generated at runtime. Do not commit them.
@@ -194,7 +215,7 @@ The Rust backend compiles and runs on **Linux**, **macOS**, and **Windows** with
 
 - **Linux**: inotify filesystem watcher
 - **macOS**: FSEvents filesystem watcher
-- **Windows**: ReadDirectoryChangesW filesystem watcher
+- **Windows**: ReadDirectoryChangesW filesystem watcher (untested, so YMMV)
 
 See `DEPLOY.md` for per-platform service installation instructions.
 
