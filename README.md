@@ -57,6 +57,8 @@ Here's the main features:
 ### Build
 
 ```bash
+git clone https://github.com/bobosola/simplealbum
+cd simplealbum
 cargo build --release
 ```
 
@@ -146,9 +148,9 @@ A sample `Caddyfile.local` is included for local development with self-signed TL
 
 ---
 
-## Performance
+## Thumbnail Generation Performance
 
-On an Apple M4 Mac Mini, generating **8,200+ thumbnails from scratch** took approximately **1 minute 40 seconds** (~86 images/second). Thumbnails are generated in the background on startup; the web UI is available immediately and populates progressively.
+An Apple M4 Mac Mini  generated **8,200+ thumbnails from scratch** in approximately **1 minute 40 seconds** (~86 images/second). Thumbnails are generated in the background on startup; the web UI is available immediately and populates progressively.
 
 | Metric | Value |
 |---|---|
@@ -162,11 +164,13 @@ The worker pool limits concurrent jobs to your CPU's available parallelism (clam
 
 ## Data Storage
 
-Simple Album uses an embedded **SQLite** database to cache photo dimensions and persist folder cover selections. SQLite was chosen over flat files (JSON, XML, etc.) because it provides indexed lookups, concurrent read/write access via WAL mode, and atomic updates — all without requiring a separate database server or manual file-locking logic.
+Simple Album uses an embedded **SQLite** database to cache photo dimensions and persist folder cover selections. SQLite was chosen over flat files (JSON, XML, etc.) because it provides indexed lookups, concurrent read/write access via WAL mode, and atomic updates. A separate database server or manual file-locking logic is not required.
 
 ## Logging
 
-Simple Album logs to the terminal (stdout/stderr) only — there is no log file when run manually. Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable:
+Simple Album logs to the terminal (stdout/stderr) only — there is no log file when run manually. When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured by your service manager log. 
+
+Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable:
 
 ```bash
 SIMPLE_ALBUM_LOG=debug ./target/release/album
@@ -174,7 +178,7 @@ SIMPLE_ALBUM_LOG=debug ./target/release/album
 
 Available levels: `trace`, `debug`, `info` (default), `warn`, `error`.
 
-When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured by your service manager:
+When running as a system service (see [`DEPLOY.md`](DEPLOY.md)) you can view the log thus:
 
 - **Linux (systemd)**: Use `journalctl` to read the log and find the admin URL:
   ```bash
@@ -212,7 +216,7 @@ Config search order (if `SIMPLE_ALBUM_CONFIG` is not set):
 ## Not included in the repo
 
 - **Test images** — the repo does not include any sample photos. Create your own `testdata/` folder or point the config at an existing photo collection.
-- **Database files** — `album.db`, `album.db-wal`, and `album.db-shm` are generated at runtime. Do not commit them.
+- **SQLite database files** — `album.db`, `album.db-wal`, and `album.db-shm` are generated at runtime. Do not commit them.
 - **Compiled binary** — build with `cargo build --release`.
 
 ---
@@ -235,4 +239,4 @@ MIT
 
 ## Acknowledgements
 
-Simple Album was designed and orchestrated by me (Bob Osola) and built by the Kimi 2.6 coding agent. The documentation was written by Kimi and humanised by me.
+Simple Album was designed and orchestrated by me (Bob Osola) and built by the Kimi 2.6 coding agent. The documentation was originally written by Kimi and later humanised by me.
