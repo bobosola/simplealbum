@@ -75,7 +75,7 @@ For each subfolder shown in the grid, the API walks each subfolder to count tota
 
 This is by design. It means the gallery is always consistent with the filesystem. Add a folder on disk, refresh the page, it appears immediately. No sync step, no cache invalidation.
 
-The web server handles URL map pathing (as put together by the processes described above) then retrieves and serves the requested image files, if they exist.
+The web server handles URL path mapping (as put together by the processes described above) then retrieves and serves the requested image files, if they exist.
 
 ---
 
