@@ -1,7 +1,25 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use image::{GenericImageView, imageops::FilterType};
 use tracing::warn;
+
+/// Monotonic per-process counter for unique temp filenames. Duplicate jobs
+/// for the same source (inotify emits several events per in-flight write,
+/// and more than one can pass the stability gate before the first rename
+/// lands) must not share a temp file: they would rename it out from under
+/// each other and one job would fail with ENOENT.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Unique hidden temp path alongside `dst` (e.g. `.7.beach_thumb.jpg.tmp`).
+/// The dot prefix keeps it out of listings and of the startup scan, and it
+/// lives inside `thumbs/`, so watcher events for it are filtered. An orphan
+/// can only remain after a hard crash mid-write; it is harmless.
+fn tmp_path(dst: &Path) -> PathBuf {
+    let n = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let fname = dst.file_name().unwrap_or_default().to_string_lossy();
+    dst.with_file_name(format!(".{}.{}.tmp", n, fname))
+}
 
 pub fn generate_image_thumb(src: &Path, dst: &Path) -> anyhow::Result<(u32, u32)> {
     let img = image::open(src)?;
@@ -20,7 +38,7 @@ pub fn generate_image_thumb(src: &Path, dst: &Path) -> anyhow::Result<(u32, u32)
 
     std::fs::create_dir_all(dst.parent().unwrap())?;
     // Atomic write: temp file then rename so a crash never leaves a partial thumb.
-    let tmp = dst.with_extension("tmp");
+    let tmp = tmp_path(dst);
     thumb.save_with_format(&tmp, image::ImageFormat::Jpeg)?;
 
     // Sanity check: a 400×300 RGB JPEG should not be under 1KB.
@@ -44,7 +62,7 @@ pub fn generate_image_thumb(src: &Path, dst: &Path) -> anyhow::Result<(u32, u32)
 pub fn generate_video_thumb(src: &Path, dst: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dst.parent().unwrap())?;
     // Atomic write: temp file then rename so a crash never leaves a partial thumb.
-    let tmp = dst.with_extension("tmp");
+    let tmp = tmp_path(dst);
 
     let output = Command::new("ffmpeg")
         .args(&[

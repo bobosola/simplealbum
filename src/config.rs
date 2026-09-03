@@ -10,6 +10,8 @@ pub struct Config {
     pub server: ServerConfig,
     pub album: AlbumConfig,
     pub state: StateConfig,
+    #[serde(default)]
+    pub worker: WorkerConfig,
     pub admin: AdminConfig,
 }
 
@@ -28,6 +30,26 @@ pub struct StateConfig {
     pub db_path: PathBuf,
 }
 
+/// Background thumbnail worker tuning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerConfig {
+    /// Number of concurrent thumbnail generation jobs. 0 (default) means
+    /// auto: the CPU core count clamped to 2..8.
+    ///
+    /// This is the main memory lever: each job decodes a full-resolution
+    /// image into RAM (a 24 MP photo decodes to ~72 MB). Operators on small
+    /// servers should set this lower (e.g. 2) and keep systemd MemoryMax
+    /// modest; operators on bigger machines can leave it auto.
+    #[serde(default)]
+    pub threads: u32,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        WorkerConfig { threads: 0 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
     pub key: String,
@@ -43,6 +65,7 @@ impl Default for Config {
             server: ServerConfig { bind: "127.0.0.1:8080".to_string() },
             album: AlbumConfig { root: album_root },
             state: StateConfig { db_path },
+            worker: WorkerConfig::default(),
             admin: AdminConfig { key: String::new() },
         }
     }
