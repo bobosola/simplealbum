@@ -116,6 +116,11 @@ root = "/path/to/your/photos"
 [state]
 db_path = "/path/to/album.db"
 
+# Thumbnail worker tuning (optional)
+[worker]
+# Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
+threads = 0
+
 # Change this to your own secure value before deploying.
 # Leaving it empty causes the service to try to write back to this file on
 # first startup, which will fail if the config directory is read-only.
