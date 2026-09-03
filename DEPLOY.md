@@ -270,6 +270,14 @@ bind = "127.0.0.1:8080"
 [album]
 root = "/Users/YOUR_USERNAME/album"
 
+# Thumbnail worker tuning (optional)
+[worker]
+# Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
+# Lower this on small servers to reduce peak memory (each job can hold a
+# full decoded frame; 24 MP decodes to ~72 MB, so 8 workers can peak at
+# ~800 MB).
+threads = 0
+
 # SQLite database location
 [state]
 db_path = "/Users/YOUR_USERNAME/Library/Application Support/album/db/album.db"
@@ -429,6 +437,14 @@ bind = "127.0.0.1:8080"
 # Root of the photo tree
 [album]
 root = "C:\\album"
+
+# Thumbnail worker tuning (optional)
+[worker]
+# Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
+# Lower this on small servers to reduce peak memory (each job can hold a
+# full decoded frame; 24 MP decodes to ~72 MB, so 8 workers can peak at
+# ~800 MB).
+threads = 0
 
 # SQLite database location
 [state]
