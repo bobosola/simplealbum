@@ -88,6 +88,14 @@ root = "/var/album"
 [state]
 db_path = "/var/lib/album/album.db"
 
+# Thumbnail worker tuning (optional)
+[worker]
+# Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
+# Lower this on small servers to reduce peak memory (each job can hold a
+# full decoded frame; 24 MP decodes to ~72 MB, so 8 workers can peak at
+# ~800 MB).
+threads = 0
+
 # Change this to your own secure value before deploying.
 # Leaving it empty causes the service to try to write back to this file on
 # first startup, which will fail if the config directory is read-only.
@@ -127,8 +135,19 @@ WorkingDirectory=/var/lib/album
 Environment="SIMPLE_ALBUM_CONFIG=/etc/album/album.toml"
 
 # Resource limits
-MemoryMax=512M
+# Memory: measured peaks with the default (auto) worker count:
+#   12 MP photos (iPhone-class) x 8 workers: ~460 MB
+#   24 MP photos (6000x4000)   x 8 workers: ~790 MB
+# 1G covers both. If you lower [worker] threads in album.toml (e.g. 2),
+# 512M is enough again. If you see OOM kills in `dmesg`, raise this or
+# lower `threads` — they trade off against each other.
+MemoryMax=1G
+# CPU: the album service can never use more than 80% of one core in total,
+# so it cannot starve other services (Caddy, etc.) — burst uploads just
+# finish more slowly. Raise (e.g. 200%) if you want faster bursts.
 CPUQuota=80%
+# Tasks: service threads + ffmpeg child processes. Measured peak is ~33
+# (video-heavy burst with 8 workers); 50 leaves comfortable headroom.
 TasksMax=50
 
 # Filesystem sandboxing
@@ -136,15 +155,19 @@ ReadWritePaths=/var/album /var/lib/album
 ProtectSystem=strict
 ProtectHome=true
 
-> **Note on `MemoryMax`**: 512 MB is sufficient for typical collections. However, large images (e.g. 12 MP+ iPhone JPEGs at 4032×3024) decode to ~50–70 MB each in RAM. The thumbnail worker runs up to 8 concurrent jobs. If you see grey/corrupted thumbnails or OOM kills in `dmesg`, increase `MemoryMax` to `1G` or higher:
-> ```bash
-> sudo systemctl edit album-service
-> ```
-> Add `MemoryMax=1G` under `[Service]`, then `daemon-reload` and restart.
-
 [Install]
 WantedBy=multi-user.target
 ```
+
+> **Note on `MemoryMax`**: the thumbnail worker decodes each source image
+> in full before resizing. Measured on a 14-core machine (auto worker
+> count = 8): a burst of 12 MP iPhone-class JPEGs peaks at ~460 MB, and
+> 24 MP photos (6000×4000) at ~790 MB — so the default unit uses 1G.
+> On a small server, set `[worker] threads = 2` in `album.toml` and
+> `MemoryMax=512M` is sufficient again. If you see OOM kills in
+> `dmesg`, raise `MemoryMax` via `systemctl edit album-service` or lower
+> `threads` — `Restart=always` recovers automatically, and the startup
+> scan re-queues any thumbnails lost to the kill.
 
 Enable and start:
 
@@ -542,7 +565,7 @@ Bookmark this URL. The key is stored in your browser's `localStorage`. To revoke
 | "Address already in use" | Port 8080 occupied | Change `bind` in `album.toml` |
 | Photos appear sideways | Missing EXIF orientation | Already handled by `kamadak-exif` — ensure source images have EXIF |
 | High CPU on startup | Large backlog | Normal — the background worker processes files asynchronously |
-| Service restarts repeatedly / OOM-kill in `dmesg` | `MemoryMax=512M` exceeded by large image decodes | Increase `MemoryMax` to `1G` via `systemctl edit album-service` |
+| Service restarts repeatedly / OOM-kill in `dmesg` | `MemoryMax` exceeded by concurrent image decodes (up to ~800 MB with 8 workers on 24 MP photos) | Raise `MemoryMax` (e.g. `1G`) or lower `[worker] threads` in `album.toml`; the startup scan re-queues any lost thumbnails |
 | Grey or solid-colour thumbnails | Worker OOM-killed mid-generation, or rare `image` crate decode bug | Increase memory limit; if issue persists for specific files, pre-generate thumbs on another machine and copy them |
 | Service won't start on macOS | launchd plist syntax error | Run `plutil -lint com.album.service.plist` |
 | Service won't start on Windows | NSSM path error | Use full paths with double backslashes in NSSM |

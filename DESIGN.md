@@ -114,6 +114,12 @@ root = "/var/album"
 # Where the SQLite database lives.
 db_path = "/var/lib/album/album.db"
 
+[worker]
+# Concurrent thumbnail generation jobs. 0 = auto (CPU core count, clamped
+# to 2-8). Each job can hold one full decoded frame in RAM, so this is the
+# service's main memory lever — lower it on small servers.
+threads = 0
+
 [admin]
 # Pre-shared key for cover selection and other write operations.
 # If left empty or omitted, the service generates one on first startup
@@ -160,13 +166,38 @@ Then update the Caddy reverse proxy accordingly.
 - **Video thumbnail format**: JPEG at quality 85, 400px max dimension, extracted at the 10% timestamp (or first available keyframe). A small play-icon overlay is rendered by the CSS/frontend; it is not baked into the JPEG.
 - **EXIF orientation**: The thumbnail worker reads the EXIF `Orientation` tag (via `kamadak-exif`) and rotates the output accordingly. This prevents portrait photos from appearing sideways. The full-size viewing image is served as-is (browsers handle EXIF orientation natively in `<img>` tags since 2019+).
 - **Lifecycle**:
-  - On startup, the service does a quick consistency scan to queue missing thumbnails, then starts the API immediately. Thumbnail generation happens in a **background worker pool** (default 4 threads) so the service is usable within seconds even with a large backlog.
-  - At runtime, `notify` (inotify on Linux) watches the album root with **recursive mode**. A single watch covers the entire tree, avoiding `max_user_watches` exhaustion. On `Create`/`Modify` events, jobs are queued for the worker pool. On `Remove` events, thumbnails are deleted synchronously.
+  - On startup, the service does a quick consistency scan to queue missing or stale thumbnails, then starts the API immediately. Thumbnail generation happens in a **background worker pool** (auto-sized to the CPU core count, clamped to 2–8, and configurable via `[worker] threads`) so the service is usable within seconds even with a large backlog.
+  - At runtime, `notify` (inotify on Linux) watches the album root with **recursive mode**. A single watch covers the entire tree, avoiding `max_user_watches` exhaustion. On `Create`/`Modify` events, jobs enter an **async pre-pass** (see [In-Flight Upload Protection](#in-flight-upload-protection)) before reaching the worker pool. On `Remove` events, thumbnails are deleted synchronously.
   - If a `thumbs/` folder becomes empty, it may be removed.
-  - **Video thumbnail generation** uses FFmpeg (system dependency). The worker shells out to `ffmpeg -ss <10pct> -i <input> -vframes 1 -q:v 2 <thumb.jpg>`. Each job has a 60-second timeout (video frame extraction is slower than image resizing).
+  - **Video thumbnail generation** uses FFmpeg (system dependency). The worker shells out to `ffmpeg -ss <10pct> -i <input> -vframes 1 -q:v 2 <thumb.jpg>`. Per-job timeouts are not currently implemented (see [Resource Protection & Limits](#resource-protection--limits)); the worker cap and `TasksMax` contain the worst case.
   - **Error handling during generation**: If a file cannot be decoded (corrupt image, unsupported format, FFmpeg failure), the worker logs a warning, skips the file, and moves on. The file does not appear in API listings until it can be processed successfully.
 
 **Rationale**: The user explicitly wants thumbnails co-located with photos. This integrates seamlessly with Caddy's static file server — no special routing rules are needed.
+
+### In-Flight Upload Protection
+
+Photographs are normally added by copying files into the tree (rsync, scp, rclone, a sync client). Filesystem watchers fire `IN_CREATE` the instant a file *appears* — before a single byte is written — and `Modify` on every write chunk. Without protection, the worker would race the upload and decode a **truncated** image: decoders are lenient about partial data, producing a thumbnail that is mostly solid grey with a strip of real pixels. Worse, the old behaviour cached the bad thumbnail forever (an existing thumbnail was never regenerated), so the file only recovered after being moved to a new folder.
+
+Three mechanisms cooperate to make this class of bug impossible in the steady state:
+
+1. **Stability sampling (async pre-pass).** Before a job may touch a worker, an async task samples the file's *size and mtime*, waits ~300 ms, and re-samples; a file that is actively being written shows a change, so sampling repeats until the file goes quiet (up to 3 samples, then the job defers). Both size and mtime are compared because some copy/upload tools pre-allocate the full file size up front, which a size-only check would miss. The pre-pass runs as lightweight per-job async tasks, so hundreds of in-flight uploads wait out their writes **in parallel** without occupying worker slots; the final `Modify` event fired when a write completes re-triggers any deferred job. A fixed delay is deliberately *not* used: slow uploads, network stalls, or backlog queue time can exceed any fixed value.
+2. **mtime-based staleness (self-healing).** A thumbnail is considered stale when the source's mtime is newer than the thumbnail's mtime, and stale thumbnails are regenerated. If the stability check ever loses the race (e.g. an upload pauses mid-file long enough to look stable), the final write event marks the bad thumbnail stale and repairs it within a second. The startup scan applies the same check, so corrupt thumbnails left behind by an older version of the service are all repaired on the next restart.
+3. **Atomic, collision-free writes.** Thumbnails are written to a unique hidden temp file (`.7.photo_thumb.jpg.tmp`) and renamed into place, so a crash or a duplicate concurrent job can never leave a partially written thumbnail or rename the temp file out from under its sibling job.
+
+The residual risk is bounded and self-correcting: at worst one bad thumbnail exists briefly, and the next event (or next restart) fixes it. Watcher-event *churn* (the many `Modify` events per in-flight write) is cheap by design — the staleness check runs first and returns immediately when nothing needs doing, so no sleeping and no decoding happens for events that are no-ops.
+
+### Resource Protection & Limits
+
+The service is designed to accept **unlimited** upload volumes (bounded only by disk space) without failing itself or degrading other services such as the web server. Uploads that back up only add queue latency; nothing in the design scales resource use with queue depth.
+
+- **Bounded memory via the worker count.** Each generation job can hold one full decoded frame in RAM (a 24 MP photo decodes to ~72 MB), so total memory use is bounded by `[worker] threads`, never by the number of queued files or in-flight uploads. Measured peak RSS: ~200 MB at 2 workers (24 MP photos), ~460 MB at 8 workers (12 MP), ~790 MB at 8 workers (24 MP); idle is ~10 MB. Queued jobs are small strings; the async pre-pass tasks are coroutines, not OS threads. This count is the service's single memory lever: small servers pin a low value and keep a modest `MemoryMax`; larger machines leave it at `0` (auto).
+- **Bounded CPU via `CPUQuota`.** Under systemd the unit caps total CPU (e.g. `CPUQuota=150%` on a 2-core box: bursts get nearly the whole machine, but other services are guaranteed the rest). Thumbnail bursts therefore finish more slowly under quota rather than starving Caddy or system processes; after a burst the service idles at ~0% CPU.
+- **Bounded tasks via `TasksMax`.** The service's OS thread count plus any FFmpeg child processes stays well under the limit (measured peak ~33 with 8 workers on video-heavy input; ~20 at 2 workers); `TasksMax=50` leaves comfortable headroom.
+- **`MemoryMax` sizing per server class.** Default unit: `MemoryMax=1G` (covers 8 workers on 24 MP photos). Small servers (≤4 cores, auto workers ≤ 4): `[worker] threads = 2` (or leave auto) with `MemoryMax=512M`. The two knobs trade off against each other — operators raise one or lower the other.
+- **Failure safety.** Thumbnails are never left half-written (atomic rename); an OOM kill is recovered by `Restart=always`, and the startup scan re-queues any thumbnails lost to the kill. The service can never wedge in a state that corrupts the photo tree.
+- **Videos** add FFmpeg child processes (memory included in the limits above); their count is bounded by the worker semaphore. Note: per-job timeouts are not yet implemented in code — FFmpeg extraction of a pathological input could hold a worker slot for a long time; this is a known gap to close (the worker cap and `TasksMax` contain the blast radius).
+
+Sizing guide: see [Deployment](#9-deployment) and `DEPLOY.md` for the complete unit files and troubleshooting table.
 
 ### Performance Considerations (10,000+ images)
 
@@ -175,7 +206,7 @@ With a large collection, four measures are critical:
 1. **Background thumbnail worker**: The service must never block startup or API requests on thumbnail generation. New and missing thumbnails are queued and processed asynchronously.
 2. **Recursive inotify watch**: A single recursive watch on the album root avoids Linux `fs.inotify.max_user_watches` limits (default ~8,192).
 3. **Image dimension cache**: Opening every image to read its width/height on every API call is prohibitively expensive. Dimensions are cached in SQLite (see [State Management](#state-management)).
-4. **Memory limits**: Each concurrent thumbnail job loads a fully decoded image into RAM. A 4032×3024 JPEG decodes to ~36 MB; with Lanczos3 resizing and multiple concurrent workers, peak memory can exceed 512 MB. When running under systemd, ensure `MemoryMax` is set high enough (e.g. `1G`) to avoid OOM kills that can leave partially-written or corrupted thumbnails.
+4. **Bounded resource use**: Memory is bounded by the worker count and CPU by the systemd quota, independent of collection size or upload volume — see [Resource Protection & Limits](#resource-protection--limits).
 
 ---
 
@@ -473,7 +504,10 @@ Additional directives in the service unit for sandboxing:
 
 ```ini
 # Resource limits
-MemoryMax=512M
+# Memory peaks measured with the auto worker count (8): ~460 MB for
+# 12 MP photos, ~790 MB for 24 MP photos. Lower `[worker] threads` in
+# album.toml to reduce the requirement (2 workers: ~200 MB).
+MemoryMax=1G
 CPUQuota=80%
 TasksMax=50
 
@@ -522,8 +556,8 @@ For defence in depth, the backend also validates the `Origin` header on POST req
 
 ### Malicious File DoS
 
-- The watcher skips files larger than a configurable limit (default 50MB) for thumbnail generation.
-- Each thumbnail job has a timeout (default 30 seconds).
+- There is currently no per-file size limit for thumbnail generation (a configurable limit, e.g. 50 MB, is planned but not yet implemented); very large files cost CPU and decode memory, contained by the worker cap and `CPUQuota`.
+- Per-job timeouts are not implemented; the systemd `MemoryMax`, `CPUQuota`, and `TasksMax` directives contain the blast radius of a pathological file (see [Resource Protection & Limits](#resource-protection--limits)).
 - The systemd `MemoryMax` and `CPUQuota` directives contain runaway resource consumption.
 - The `image` crate is pure Rust and memory-safe.
 
@@ -592,3 +626,5 @@ The following features are **not** part of the initial scope, but the architectu
 - [ ] Recursive inotify watch avoids `max_user_watches` exhaustion on Linux.
 - [ ] Image dimensions are cached in SQLite; API does not open files to read metadata on every request.
 - [ ] Common video formats (MP4, MOV, AVI, WebM, MKV) are supported with auto-generated thumbnails and native HTML5 playback.
+- [ ] Slow or interrupted uploads never leave corrupt thumbnails: the stability pre-pass defers in-flight writes, mtime staleness self-heals any race, and the startup scan repairs legacy bad thumbnails on restart.
+- [ ] Unlimited upload volumes are safe: memory is bounded by `[worker] threads` and CPU by the systemd quota, so large backlogs add latency without risking OOM kills or starving other services.
