@@ -73,7 +73,7 @@ For each subfolder shown in the grid, the API walks each subfolder to count tota
 - Each page load triggers exactly one `readdir` on the folder you're viewing
 - The filesystem itself *is* the directory tree — the app reads it live on every request
 
-This is by design. It means the gallery is always consistent with the filesystem. Add a folder on disk, refresh the page, it appears immediately. No sync step, no cache invalidation.
+This means the gallery is always consistent with the filesystem. If you add a folder on disk andrefresh the page, it appears immediately.
 
 The web server handles URL path mapping (as put together by the processes described above) then retrieves and serves the requested image files, if they exist.
 
@@ -190,7 +190,7 @@ A sample `Caddyfile.local` is included for local development with self-signed TL
 
 ## Thumbnail Generation Performance
 
-An Apple M4 Mac Mini  generated **8,200+ thumbnails from scratch** in approximately **1 minute 40 seconds** (~86 images/second). Thumbnails are generated in the background on startup; the web UI is available immediately and populates progressively.
+An Apple M4 Mac Mini generated **8,200+ thumbnails from scratch** in approximately **1 minute 40 seconds** (~86 images/second). Thumbnails are generated in the background on startup; the web UI is available immediately and populates progressively.
 
 | Metric | Value |
 |---|---|
