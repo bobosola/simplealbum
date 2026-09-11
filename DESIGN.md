@@ -13,12 +13,12 @@ The frontend is plain HTML, CSS, and vanilla JavaScript (ES2020+). No frameworks
 ## 2. Architecture
 
 ```
-┌─────────────┐     ┌──────────────────────────────────────┐
-│   Browser   │────▶│  Caddy (port 443)                       │
-└─────────────┘     │  • Static files: / → static/            │
-                    │  • Photos:     /photoalbum/* → album/   │
-                    │  • API:       /api/* → localhost:8080   │
-                    └─────────────────────────────────────---─┘
+┌─────────────┐     ┌───────────────────────────────────────┐
+│   Browser   │────▶│  Caddy (port 443)                     │
+└─────────────┘     │  • Static files: / → static/          │
+                    │  • Photos:     /photoalbum/* → album/ │
+                    │  • API:       /api/* → localhost:8080 │
+                    └───────────────────────────────────────┘
                                          │
                                          ▼
                               ┌────────────────────┐
