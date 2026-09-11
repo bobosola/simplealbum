@@ -73,7 +73,7 @@ For each subfolder shown in the grid, the API walks each subfolder to count tota
 - Each page load triggers exactly one `readdir` on the folder you're viewing
 - The filesystem itself *is* the directory tree — the app reads it live on every request
 
-This means the gallery is always consistent with the filesystem. If you add a folder on disk andrefresh the page, it appears immediately.
+This means the gallery is always consistent with the filesystem. If you add a folder on disk and refresh the page, the new images and folder appear immediately.
 
 The web server handles URL path mapping (as put together by the processes described above) then retrieves and serves the requested image files, if they exist.
 
