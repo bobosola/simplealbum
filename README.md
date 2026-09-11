@@ -35,7 +35,7 @@ These features have been deliberately omitted. Use your favourite LLM to add the
 - No ability to rename or reorder your photos — rename them alphabetically if you want to change the display order or name
 - No ability to allow different user perms — everyone can see all the photos
 - No intermediate (space-consuming) range of thumbnail sizes — you get just the default ones
-- No upload interface as these are generally slow and ponderous to use for large numbers of files — just use SFTP with [Filezilla](https://filezilla-project.org) or even good old `scp` to quickly upload your photos to your server
+- No upload interface as these are generally slow and ponderous to use for large numbers of files — just use SFTP with [Filezilla](https://filezilla-project.org) or even good old `scp` to quickly upload your photos to your server. On Android devices the free Total Commander app with the free SFTP plugin works well to upload phone photos. Apple devices may have similar apps available.
 - No image editing features
 
 ---
