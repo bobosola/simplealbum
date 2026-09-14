@@ -11,6 +11,26 @@ It's a single Rust binary with a static front end consisting of:
 
 You can deploy these in the site root as a stand-alone photo album site or in a subfolder such as `/photos` as a part of another site. Just edit the CSS and HTML files to your taste. No build step or framework is required.
 
+# Uploading photos & videos
+
+There is deliberately no upload interface included (KISS principle). You can use any file manager which can connect to your remote server to copy over your folders and photos. For android devices, the free Total Commander app with its SFTP plugin works well. Apple devices may have similar apps.
+
+I have included the script `sync_photos.sh` which my LLM claims is cross-platform but I have only tested it from Mac to Debian (you may need to run `chmod +x sync_photos.sh` before first use). This uses `rsync` to automate the one-way upload process as much as possible. Just set your server and album folder details once in the script, then you can drag a single photo, multiple photos, or a folder directly into the terminal prompt or pass them via the command line thus:
+```bash
+./sync_photos.sh photo1.jpg photo2.jpg
+```
+or an entire folder, e.g.
+```bash
+./sync_photos.sh photos/special_day_out
+```
+You will then be prompted for:
+
+- a destination folder (somewhere in the base album folder as set by you in the script)
+- your SSH password or keyphrase
+
+The script will create a new destination folder if needed, provided that its parent path exists. There are some perms options you can set in the script if you need them, but the defaults should be fine for the simple case of uploading to a web server.
+
+
 # Features
 
 Here's what's included:
@@ -35,7 +55,6 @@ These features have been deliberately omitted. Use your favourite LLM to add the
 - No ability to rename or reorder your photos — rename them alphabetically if you want to change the display order or name
 - No ability to allow different user perms — everyone can see all the photos
 - No intermediate (space-consuming) range of thumbnail sizes — you get just the default ones
-- No upload interface as these are generally slow and ponderous to use for large numbers of files — just use SFTP with [Filezilla](https://filezilla-project.org) or even good old `scp` to quickly upload your photos to your server. On Android devices the free Total Commander app with the free SFTP plugin works well to upload phone photos. Apple devices may have similar apps available.
 - No image editing features
 
 ---
