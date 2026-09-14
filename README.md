@@ -1,6 +1,14 @@
 # Simple Photo Album
 
-This is a self-hosted cross-platform simple web photo album application. It's basically a web viewer for your existing image folders. It serves photos and videos from any folder tree on your server. These can be organised and named however you like. The application supports many thousands of image or video files. 
+This is a self-hosted cross-platform simple web photo album application. It's basically a web viewer for your existing image folders tree. It serves photos and videos from any folder tree on your web server. These can be organised and named however you like. The application supports many thousands of image or video files. 
+
+You will need the ability to:
+
+- install `FFmpeg` on your web server
+- install the binary application and run it as a service
+- edit your web server config file
+
+The [DEPLOY.md](DEPLOY.md) file has full details.
 
 Your files are served through a clean web interface ordered by the file and folder names as per the underlying folder tree. You can see a live example at [https://www.osola.org.uk/photos](https://www.osola.org.uk/photos) which has over 8,000 photos. 
 
@@ -50,7 +58,7 @@ Here's what's included:
 
 # Non-Features
 
-These features have been deliberately omitted. Use your favourite LLM to add them if you need them.
+These features have been deliberately omitted (KISS principle again):
 
 - No ability to rename or reorder your photos — rename them alphabetically if you want to change the display order or name
 - No ability to allow different user perms — everyone can see all the photos
