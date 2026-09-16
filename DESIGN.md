@@ -278,7 +278,7 @@ Response `200 OK`:
     {
       "name": "summer holiday",
       "path": "1980-89/1981/summer holiday",
-      "cover": "beach_thumb.jpg",
+      "cover": "thumbs/beach_thumb.jpg",
       "count_photos": 12,
       "count_albums": 0
     }
@@ -307,7 +307,7 @@ Response `200 OK`:
 - `photos`: direct media files in this folder (images and videos), sorted by filename.
   - `type`: `"image"` or `"video"`.
   - `duration`: present only for videos, integer seconds.
-- `cover`: the chosen thumbnail for the folder. Falls back recursively: first photo in the folder itself, then the first photo in the first child folder, then the first photo in the first grandchild folder. If no thumbnail exists anywhere in the subtree, the frontend displays a static muted placeholder.
+- `cover`: the chosen thumbnail for the folder, as a path **relative to that folder** — so `"thumbs/beach_thumb.jpg"` when the source photo sits in the folder itself, or `"1981/thumbs/beach_thumb.jpg"` when it sits in a subfolder. Falls back recursively: first photo in the folder itself, then the first photo in the first child folder, then the first photo in the first grandchild folder. If no thumbnail exists anywhere in the subtree, the frontend displays a static muted placeholder.
 
 #### `POST /api/cover`
 

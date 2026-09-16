@@ -253,6 +253,8 @@ The worker pool limits concurrent jobs to your CPU's available parallelism (clam
 
 Simple Album uses an embedded **SQLite** database to cache photo dimensions and persist folder cover selections. SQLite was chosen over flat files (JSON, XML, etc.) because it provides indexed lookups, concurrent read/write access via WAL mode, and atomic updates. A separate database server or manual file-locking logic is not required.
 
+**Backing up:** the cached photo dimensions and video durations are rebuilt automatically from the filesystem, so losing them costs nothing but a re-scan. Your **folder cover choices are not** — they exist only in this database, and nothing on disk can reconstruct them. Deleting `album.db` permanently loses every cover you have set by hand. If you have set any covers, back the database up, and copy `album.db` together with its `album.db-wal` and `album.db-shm` companions (or stop the service first), because recent writes may still be sitting in the write-ahead log.
+
 ## Logging
 
 Simple Album logs to the terminal (stdout/stderr) only — there is no log file when run manually. When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured as described below. 
@@ -264,6 +266,8 @@ SIMPLE_ALBUM_LOG=debug SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/
 ```
 
 Available levels: `trace`, `debug`, `info`, `warn`, `error`. An unparseable value is reported and `info` is used instead.
+
+> **The startup log contains your admin key.** The admin URL printed at `info` level embeds the key, because that is how an operator finds it after installation without having to open `album.toml`. Treat the log as a secret: do not ship it to third-party log aggregation, attach it to a bug report, or include it in a support bundle unless you have rotated the key first. The key only authorises folder-cover changes; to rotate it, edit `admin.key` in `album.toml` and restart the service.
 
 When running as a system service (see [`DEPLOY.md`](DEPLOY.md)) you can view the log as follows:
 

@@ -76,12 +76,22 @@ If you have built and tested the application on a dev server, you can save time 
 
 # Upgrading an Existing Deployment
 
-> **This section applies only to installations built before the changes that
-> introduced `app-2026-09-16-2109.js`.** A fresh installation from the current
-> source needs none of it: the database schema and the frontend are already
-> consistent with the binary. The quick way to tell which you have is the asset
-> filename in `static/` — if it contains `app-2026-09-16-1515.js` you are
-> upgrading, and if it contains `app-2026-09-16-2109.js` you are not.
+> **This section applies only to installations older than the release that
+> changed the thumbnail encoder, the video poster-frame timestamp, EXIF
+> dimension handling, the SQLite schema and the frontend.** A fresh installation
+> from the current source needs none of it: the database schema and the frontend
+> are already consistent with the binary.
+>
+> The test is whether the two halves of your deployed frontend agree. The
+> versioned asset name in `static/` must be the same one named by the
+> `<script src=...>` tag in the `static/index.html` you are serving. If they
+> match, you are current and this section does not apply to you. If `index.html`
+> names a script that is no longer present in `static/`, you are running a mixed
+> pair, and either the steps below or a plain re-deploy of both files will fix it.
+>
+> No specific filename is named here on purpose. An earlier revision of this
+> guide pinned the test to `app-2026-09-16-2109.js`, which stopped being a valid
+> answer as soon as the asset was renamed again — a test that can only go stale.
 
 That upgrade changes the thumbnail encoder, the video poster frame timestamp,
 EXIF dimension handling, the SQLite schema and the frontend. **No change to
@@ -119,11 +129,11 @@ crates.io. Copy `Cargo.lock` along with the source, as always.
 
 ```
 static/index.html                 changed: names the new script, header fix
-static/app-2026-09-16-2109.js     new name, was app-2026-09-16-1515.js
+static/app-<version>.js           the newly built script (see static/)
 ```
 
 `style-*.css` and `og-image.png` are unchanged. Upload both files, then delete
-the superseded `app-2026-09-16-1515.js` from the server. `index.html` is not
+the superseded `app-*.js` from the server. `index.html` is not
 versioned, so a browser holding a cached copy will keep requesting the old script
 until it revalidates — an ordinary reload is normally enough, and a hard refresh
 is always enough. Check the network tab if the site still looks unchanged.

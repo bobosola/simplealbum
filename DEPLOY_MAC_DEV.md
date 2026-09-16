@@ -137,7 +137,6 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/simplealbum/albu
 INFO album: Config loaded from /Users/bobosola/Sites/simplealbum/album.local.toml
 INFO album: Album root: /Users/bobosola/photos
 INFO album: API binding: 127.0.0.1:18080
-INFO album: Admin key: xxxxxxxxxxxx
 INFO album: Admin URL: https://localhost:8443/#admin=xxxxxxxxxxxx
 INFO album: FFmpeg detected.
 INFO album: ffprobe detected.

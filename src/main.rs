@@ -63,7 +63,13 @@ async fn main() -> anyhow::Result<()> {
     info!("Config loaded from {}", cfg_path.display());
     info!("Album root: {}", cfg.album.root.display());
     info!("API binding: {}", cfg.server.bind);
-    info!("Admin key: {}", cfg.admin.key);
+    // The admin URL is printed deliberately: it is how an operator learns the key
+    // after installation, and it belongs in the log they already read for startup
+    // errors. The key is not logged separately — that would only duplicate the
+    // secret on a second line. The consequence is that these logs contain the key
+    // (documented in README), so they should not be shipped to third-party log
+    // aggregation or attached to bug reports.
+    //
     // `public_url` is the deployment's externally visible base URL, so one line
     // covers both live and local runs. Previously this was hardcoded, which told
     // every deployment the same wrong domain.
