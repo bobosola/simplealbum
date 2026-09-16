@@ -57,7 +57,7 @@ Here's what's included:
   site's file tree. The photos are public by design, but no album data lives among your website
   files, so removing the album is a single config-block change.
 - **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first detection in a `thumbs` folder within each image folder and deleted when the parent image is deleted
-- **Simple admin mode to choose folder thumbnails** — pick any photo as the thumbnail for its own folder or any ancestor of it
+- **Simple admin mode to choose folder thumbnails** — optionally pick any photo as the thumbnail for its own folder or any ancestor of it (folder thumbnails othwerwise default to the first image in the folder)
 - **Live filesystem watcher service** —  the site updates automatically as you add or remove photos
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
 - **Dark mode** — persisted automatic or manual toggle
