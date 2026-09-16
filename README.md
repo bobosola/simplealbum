@@ -8,7 +8,7 @@ You will need the ability to:
 - install the binary application and run it as a service
 - edit your web server config file
 
-The [DEPLOY.md](DEPLOY.md) file has full details.
+The [`DEPLOY.md`](DEPLOY.md) file has full details.
 
 Your files are served through a clean web interface ordered by the file and folder names as per the underlying folder tree. You can see a live example at [https://www.osola.org.uk/photos](https://www.osola.org.uk/photos) which has over 8,000 photos. 
 
@@ -16,14 +16,17 @@ It's a single Rust binary with a static front end consisting of:
 - one HTML file
 - one CSS file
 - one vanilla JS file
+- one PNG (`og-image.png`), used as the link-preview image when the site is shared
 
-You can deploy these in the site root as a stand-alone photo album site or in a subfolder such as `/photos` as a part of another site. Just edit the CSS and HTML files to your taste. No build step or framework is required.
+The CSS and JS filenames are versioned (e.g. `style-2026-09-16-1253.css`) and renamed on every change, so browsers can cache them for a year without ever going stale. The PNG is optional — replace it with any 1200x630 image, or delete it and the four `og:image`/`twitter:image` tags that reference it.
+
+You can deploy these in the site root as a stand-alone photo album site or in a subfolder such as `/photos` as a part of another site. Edit the CSS and HTML to your taste, set `public_url` and `site_name` in `album.toml` (the latter should match your `<h1>`), and see [Customising the frontend for your deployment](DEPLOY.md#customising-the-frontend-for-your-deployment) for the full list of deployment-specific values. No build step or framework is required.
 
 # Uploading photos & videos
 
 There is deliberately no upload interface included (KISS principle). You can use any file manager which can connect to your remote server to copy over your folders and photos. For android devices, the free Total Commander app with its SFTP plugin works well. Apple devices may have similar apps.
 
-I have included the script `sync_photos.sh` which my LLM claims is cross-platform but I have only tested it from Mac to Debian (you may need to run `chmod +x sync_photos.sh` before first use). This uses `rsync` to automate the one-way upload process as much as possible. Just set your server and album folder details once in the script, then you can drag a single photo, multiple photos, or a folder directly into the terminal prompt or pass them via the command line thus:
+I have included the script [`sync_photos.sh`](sync_photos.sh) which my LLM claims is cross-platform but I have only tested it from Mac to Debian (you may need to run `chmod +x sync_photos.sh` before first use). This uses `rsync` to automate the one-way upload process as much as possible. Just set your server and album folder details once in the script, then you can drag a single photo, multiple photos, or a folder directly into the terminal prompt or pass them via the command line thus:
 ```bash
 ./sync_photos.sh photo1.jpg photo2.jpg
 ```
@@ -45,11 +48,11 @@ Here's what's included:
 
 - **Read-only for your photos & videos** — your image and video files are not altered in any way
 - **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first detection in a `thumbs` folder within each image folder and deleted when the parent image is deleted
-- **Simple admin mode to choose folder thumbnails** — pick any photo as the thumbnail for its parent or grandparent folder
+- **Simple admin mode to choose folder thumbnails** — pick any photo as the thumbnail for its own folder or any ancestor of it
 - **Live filesystem watcher service** —  the site updates automatically as you add or remove photos
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
 - **Dark mode** — persisted automatic or manual toggle
-- **Sharing** — buttons for image URL copy and download are on the image view page
+- **Sharing** — a standard share icon offers copy-link plus sharing a file or folder to common social media platforms
 - **Keyboard & swipe navigation** — standard keyboard navigation in the image viewer, with swipe left and right for touch screens
 - **Image pre-loading** — automatic next and previous image pre-loading to improve the user experience and avoid load lag which can otherwise occur, particularly on small screen devices
 - **Browser history integration** — default browser back and forward actions work as expected
@@ -182,10 +185,10 @@ The backend listens on the address configured in `server.bind` of `album.toml` (
 The startup log prints an admin URL like:
 
 ```
-Admin URL: https://your-domain.com/#admin=xxxxxxxxxxxx
+Admin URL: https://album.example.com/#admin=xxxxxxxxxxxx
 ```
 
-where the key value is the value set in the `album.toml` file. Open that URL (or append `/#admin=...` to any page) to enter Admin mode. A star icon (⭐) will appear in the header. Click any photo's star icon to set it as a folder cover image. 
+The base of that URL is your `public_url` setting, and the key is the value set in `album.toml`. Open that URL (or append `/#admin=...` to any page) to enter Admin mode. A star icon (⭐) will appear in the header. Click any photo's star icon to set it as a folder cover image. 
 
 For simplicity, the admin mode uses a hash-prefixed path rather than a GET string parameter or admin password login. The "path-with-hash" approach is a [URI fragment](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Fragment) which ensures that the key does not leave the browser and prevents it from being sent to a server, or stored externally, such as in server logs.
 
@@ -209,7 +212,7 @@ Simple Album is designed to work with any reverse proxy or web server:
 
 **Caddy is not a prerequisite.** It is used in the example configs because it handles TLS and reverse proxying with minimal configuration, but you can substitute **Nginx, Apache, Traefik, or any other proxy** that supports `reverse_proxy`/`proxy_pass` semantics. The only requirements from the proxy are:
 
-1. Serve `static/index.html`, `static/style.css`, and `static/app.js` at `/`
+1. Serve the files in `static/` — the HTML, the versioned CSS and JS, and `og-image.png` — wherever you deploy them (site root or a subfolder)
 2. Proxy `/api/*` to the Rust backend
 3. Serve `/photoalbum/*` from your album root directory
 
@@ -239,13 +242,13 @@ Simple Album uses an embedded **SQLite** database to cache photo dimensions and 
 
 Simple Album logs to the terminal (stdout/stderr) only — there is no log file when run manually. When running as a system service (see [`DEPLOY.md`](DEPLOY.md)), stdout/stderr is captured as described below. 
 
-Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable:
+Control verbosity with the `SIMPLE_ALBUM_LOG` environment variable. It defaults to `info`, so the startup log — including the admin URL — is visible without setting anything:
 
 ```bash
-SIMPLE_ALBUM_LOG=debug ./target/release/album
+SIMPLE_ALBUM_LOG=debug SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/album
 ```
 
-Available levels: `trace`, `debug`, `info` (default), `warn`, `error`.
+Available levels: `trace`, `debug`, `info`, `warn`, `error`. An unparseable value is reported and `info` is used instead.
 
 When running as a system service (see [`DEPLOY.md`](DEPLOY.md)) you can view the log as follows:
 

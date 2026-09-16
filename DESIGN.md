@@ -609,9 +609,9 @@ album.example.com {
 }
 ```
 
-**CSP note:** `style-src 'unsafe-inline'` is required because the frontend uses inline styles for dynamic positioning (e.g. the photo viewer). No external scripts are permitted.
+**CSP note:** `style-src 'unsafe-inline'` is required because the frontend uses inline styles for dynamic positioning (e.g. the photo viewer). No external scripts are permitted. The `/api/share` pages are compatible with this policy: they hand off with `<meta http-equiv="refresh">` rather than an inline script, which no CSP can block.
 
-**Note**: `/var/album` is the photo tree. `/var/www/album-static` contains `index.html`, `style.css`, `app.js`.
+**Note**: `/var/album` is the photo tree. `/var/www/album-static` holds the frontend: `index.html`, the versioned `style-*.css` and `app-*.js`, and `og-image.png`.
 
 ### Permissions
 

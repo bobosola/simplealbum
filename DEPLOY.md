@@ -174,6 +174,9 @@ User=album
 Group=album
 WorkingDirectory=/var/lib/album
 Environment="SIMPLE_ALBUM_CONFIG=/etc/album/album.toml"
+# Optional: the service defaults to `info`, which is what you want for finding
+# the admin URL in the journal. Add this only to change verbosity.
+#Environment="SIMPLE_ALBUM_LOG=info"
 
 # Resource limits
 # Memory: measured peaks with the default (auto) worker count:
@@ -617,9 +620,9 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
 Paste the output into `album.toml` under `[admin] key = "..."`.
 
-On startup the service logs the admin URL:
+On startup the service logs the admin URL, built from your `public_url` setting:
 ```
-Admin URL: https://your-domain.com/#admin=xxxxxxxxxxxx
+Admin URL: https://album.example.com/#admin=xxxxxxxxxxxx
 ```
 
 Bookmark this URL. The key is stored in your browser's `localStorage`. To revoke access:

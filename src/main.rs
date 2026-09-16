@@ -35,17 +35,29 @@ fn check_ffmpeg() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_env("SIMPLE_ALBUM_LOG"))
-        .init();
+    // `SIMPLE_ALBUM_LOG` is optional and defaults to `info`, so the startup log
+    // (which contains the admin URL) is visible without extra configuration.
+    // `EnvFilter::from_env` would instead leave the service silent when unset.
+    let filter = match tracing_subscriber::EnvFilter::try_from_env("SIMPLE_ALBUM_LOG") {
+        Ok(filter) => filter,
+        Err(err) => {
+            if std::env::var_os("SIMPLE_ALBUM_LOG").is_some() {
+                eprintln!("Ignoring invalid SIMPLE_ALBUM_LOG ({err}); using `info`.");
+            }
+            tracing_subscriber::EnvFilter::new("info")
+        }
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let (cfg, cfg_path) = Config::load()?;
     info!("Config loaded from {}", cfg_path.display());
     info!("Album root: {}", cfg.album.root.display());
     info!("API binding: {}", cfg.server.bind);
     info!("Admin key: {}", cfg.admin.key);
-    info!("Admin URL (production): https://your-domain.com/#admin={}", cfg.admin.key);
-    info!("Admin URL (local dev):  https://localhost:8443/#admin={}", cfg.admin.key);
+    // `public_url` is the deployment's externally visible base URL, so one line
+    // covers both live and local runs. Previously this was hardcoded, which told
+    // every deployment the same wrong domain.
+    info!("Admin URL: {}#admin={}", cfg.server.public_url, cfg.admin.key);
 
     check_ffmpeg();
 

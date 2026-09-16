@@ -137,13 +137,14 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/simplealbum/albu
 INFO album: Config loaded from /Users/bobosola/Sites/simplealbum/album.local.toml
 INFO album: Album root: /Users/bobosola/photos
 INFO album: API binding: 127.0.0.1:18080
+INFO album: Admin key: xxxxxxxxxxxx
+INFO album: Admin URL: https://localhost:8443/#admin=xxxxxxxxxxxx
 INFO album: FFmpeg detected.
 INFO album::db: Database opened with WAL mode: /Users/bobosola/Sites/simplealbum/album.db
 INFO album: Starting initial scan...
 INFO album: Initial scan queued. Starting watcher and API...
 INFO album::watcher: Filesystem watcher started on /Users/bobosola/photos
 INFO album: API server listening on 127.0.0.1:18080
-INFO album: Admin URL: https://localhost:8443/#admin=xxxxxxxxxxxx
 ```
 
 **Copy the Admin URL from the log** and bookmark it. That URL (with the `#admin=...` fragment) puts your browser into admin mode.
