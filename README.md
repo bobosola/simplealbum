@@ -18,7 +18,7 @@ It's a single Rust binary with a static front end consisting of:
 - one vanilla JS file
 - one PNG (`og-image.png`), used as the link-preview image when the site is shared
 
-The CSS and JS filenames are versioned (e.g. `style-2026-09-16-1253.css`) and renamed on every change, so browsers can cache them for a year without ever going stale. The PNG is optional — replace it with any 1200x630 image, or delete it and the four `og:image`/`twitter:image` tags that reference it.
+The CSS and JS filenames are versioned (e.g. `style-YYYY-MM-DD-HHMM.css`) and renamed on every change, so browsers can cache them for a year without ever going stale. The PNG is optional — replace it with any 1200x630 image, or delete it and the four `og:image`/`twitter:image` tags that reference it.
 
 You can deploy these in the site root as a stand-alone photo album site or in a subfolder such as `/photos` as a part of another site. Edit the CSS and HTML to your taste, set `public_url` and `site_name` in `album.toml` (the latter should match your `<h1>`), and see [Customising the frontend for your deployment](DEPLOY.md#customising-the-frontend-for-your-deployment) for the full list of deployment-specific values. No build step or framework is required.
 
@@ -103,8 +103,8 @@ For each subfolder shown in the grid, the API walks each subfolder to count tota
 
 **In short:**
 - No persistent directory tree in memory
-- No tree in the database (SQLite only stores cover choices and image dimensions)
-- Each page load triggers exactly one `readdir` on the folder you're viewing
+- No tree in the database (SQLite only stores cover choices, image dimensions, and video durations)
+- Each page load triggers exactly one `readdir` of the folder you're viewing, plus the count walk described above (and a thumbnail lookup for each subfolder's cover)
 - The filesystem itself *is* the directory tree — the app reads it live on every request
 
 This means the gallery is always consistent with the filesystem. If you add a folder on disk and refresh the page, the new images and folder appear immediately.

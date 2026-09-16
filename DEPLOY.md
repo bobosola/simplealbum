@@ -23,11 +23,11 @@ static/app-<version>.js
 static/og-image.png      ← Link-preview image (see below)
 ```
 
-**NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-2026-09-16-1253.js` and `style-2026-09-16-1253.css` . Ensure that all references to these files are updated accordingly. Note that `index.html` itself is not versioned, so a browser holding a cached copy will keep requesting the previous asset names until it revalidates.
+**NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-YYYY-MM-DD-HHMM.js` and `style-YYYY-MM-DD-HHMM.css` . Ensure that all references to these files are updated accordingly. Note that `index.html` itself is not versioned, so a browser holding a cached copy will keep requesting the previous asset names until it revalidates.
 
 **Link previews:** `album.toml` must set `server.public_url` (the externally visible base URL, trailing slash included) and `server.site_name`. `public_url` is what builds the absolute URLs that `/api/share` returns, and crawlers reject relative ones. `static/index.html` additionally carries static Open Graph tags that hardcode the production origin, with `static/og-image.png` as the preview image, so both must be uploaded with the rest of `static/` or crawlers get a 404 and previews lose their picture. Note that the *service* only ever uses per-item thumbnails — it never references `og-image.png` — so that file is purely a frontend concern. Keep the hardcoded origin in `index.html` and `public_url` in step if the site ever moves. Crawlers cache previews aggressively — after changing any of this, re-scrape with the Facebook Sharing Debugger or by appending a throwaway query string.
 
-**Upgrading an existing deployment:** `public_url` and `site_name` are required fields, so the service will refuse to start without them. Add them to `album.toml` **before** swapping in the new binary: serde ignores unknown fields, so an older binary reads the new config without complaint. That ordering avoids a failed start.
+**Upgrading an existing deployment:** see [Upgrading an Existing Deployment](#upgrading-an-existing-deployment) below for the full checklist. (If you are upgrading from a build older than the one that added `public_url` and `site_name`: they are required fields, so the service will refuse to start without them. Add them to `album.toml` **before** swapping in the new binary — serde ignores unknown fields, so an older binary reads the new config without complaint. That ordering avoids a failed start.)
 
 ### Customising the frontend for your deployment
 
@@ -71,6 +71,118 @@ The binary appears at `target/release/album` (Linux/macOS) or `target\release\al
 # Copying from a dev server
 
 If you have built and tested the application on a dev server, you can save time on the live server by copying over the photos, thumbnails, and SQLite files from dev. However, if dev and live are on different platorms then you will of course have to recompile the application binary for the dev platform's architecture. All the other files can be copied over with path changes made where appropriate  in the `album.toml` file.
+
+---
+
+# Upgrading an Existing Deployment
+
+> **This section applies only to installations built before the changes that
+> introduced `app-2026-09-16-2109.js`.** A fresh installation from the current
+> source needs none of it: the database schema and the frontend are already
+> consistent with the binary. The quick way to tell which you have is the asset
+> filename in `static/` — if it contains `app-2026-09-16-1515.js` you are
+> upgrading, and if it contains `app-2026-09-16-2109.js` you are not.
+
+That upgrade changes the thumbnail encoder, the video poster frame timestamp,
+EXIF dimension handling, the SQLite schema and the frontend. **No change to
+`album.toml` is needed** — no configuration field was added, removed or renamed.
+
+The commands below are the systemd/Linux ones. On macOS use the `launchd`
+equivalents and on Windows the `nssm` ones, both given further down this file.
+
+### 1. Back up the database
+
+Step 4 migrates the schema automatically on first start, and a migration is the
+one step in this procedure that cannot be undone by putting the old binary back.
+Take a copy first:
+
+```bash
+sudo systemctl stop album-service
+sudo cp /var/lib/album/album.db /var/lib/album/album.db.bak
+```
+
+### 2. Build on the live server
+
+The binary has to be compiled for the platform it runs on, so build it on the
+live server (or cross-compile deliberately) rather than copying it from dev:
+
+```bash
+cd /path/to/simplealbum
+git pull
+cargo build --release
+```
+
+No crates were added by this upgrade, so this build needs no new downloads from
+crates.io. Copy `Cargo.lock` along with the source, as always.
+
+### 3. Upload the frontend
+
+```
+static/index.html                 changed: names the new script, header fix
+static/app-2026-09-16-2109.js     new name, was app-2026-09-16-1515.js
+```
+
+`style-*.css` and `og-image.png` are unchanged. Upload both files, then delete
+the superseded `app-2026-09-16-1515.js` from the server. `index.html` is not
+versioned, so a browser holding a cached copy will keep requesting the old script
+until it revalidates — an ordinary reload is normally enough, and a hard refresh
+is always enough. Check the network tab if the site still looks unchanged.
+
+### 4. Swap the binary and restart
+
+```bash
+sudo install -m 755 target/release/album /usr/local/bin/album
+sudo systemctl start album-service
+sudo journalctl -u album-service -n 20 --no-pager
+```
+
+Startup runs the migration: `ALTER TABLE photo_metadata ADD COLUMN duration` and
+the removal of two indexes that duplicated the primary keys. A clean start with
+no errors is all you should see. Nothing else in the database needs attention;
+the existing `folder_covers` rows and thumbnail files are used as they are.
+
+### 5. Optional: correct metadata written by the old build
+
+Two consequences of the old build are deliberately *not* repaired automatically,
+because the repair path only refills rows that are missing. Both are cosmetic,
+and both are worth fixing only if they bother you:
+
+**Portrait photos show swapped dimensions.** Rows written by the old build hold
+the unrotated (landscape) width and height for photos whose EXIF orientation is
+5–8. To correct every row without regenerating a single thumbnail:
+
+```bash
+sqlite3 /var/lib/album/album.db "DELETE FROM photo_metadata;"
+sudo systemctl restart album-service
+```
+
+Every file is queued, but the thumbnails are still current, so the worker takes
+the metadata-only branch and just reads each file header — no image is decoded
+and no thumbnail is rewritten. Expect a few minutes for a few thousand photos.
+
+**PNG thumbnails contain JPEG bytes.** They are named `.png` and hold JPEG data,
+which is exactly what this upgrade fixes, but a thumbnail that exists and is
+newer than its source is treated as current and left alone. Browsers sniff image
+content, so these display correctly as they are. To re-encode them, delete the
+`thumbs` folders under the album root and let the worker rebuild them (this one
+does regenerate everything, bounded by `[worker] threads`):
+
+```bash
+find /var/album -type d -name thumbs -prune -exec rm -rf {} +
+sudo systemctl restart album-service
+```
+
+### What the upgrade fixes, so you can confirm it worked
+
+- Videos show a duration next to their dimensions (previously never displayed,
+  because the value was hardcoded to zero).
+- Portrait photos processed after the upgrade report their displayed dimensions,
+  not the stored ones.
+- Thumbnails of PNG and WebP sources are genuinely PNG and WebP.
+- A folder moved or copied into the album gets its thumbnails within seconds,
+  without a service restart.
+- The service accepts API requests as soon as it starts, instead of waiting for
+  the opening scan of the photo tree to finish.
 
 # Creating from Scratch
 

@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, Semaphore};
-use image::GenericImageView;
 use tracing::{debug, info, warn};
 
 use crate::{config::Config, db::Db, thumb, util};
@@ -21,6 +20,10 @@ const STABILITY_INTERVAL: Duration = Duration::from_millis(300);
 /// job at a point where the file is stable. This keeps the async gate from
 /// ever holding a task open for an unbounded time.
 const STABILITY_MAX_SAMPLES: u32 = 3;
+
+/// Grace window applied when a source file's mtime is in the future. See
+/// [`thumb_is_fresh`] for why such a timestamp cannot be trusted.
+const UNTRUSTED_MTIME_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub enum ThumbJob {
@@ -157,8 +160,7 @@ async fn await_stable(root: &Path, db: &Db, rel_path: &str) -> bool {
     }
 
     let thumb_fresh = thumb_is_fresh(root, rel_path, file_mtime(&meta));
-    let meta_missing = db.get_metadata(rel_path).is_none();
-    if thumb_fresh && !meta_missing {
+    if thumb_fresh && !metadata_incomplete(db.get_metadata(rel_path), &fname) {
         return false; // nothing to do
     }
 
@@ -210,9 +212,40 @@ fn thumb_is_fresh(root: &Path, rel_path: &str, src_mtime: SystemTime) -> bool {
         Some(p) => p.join("thumbs").join(util::thumb_name(&fname)),
         None => return false,
     };
+
+    // A source whose mtime is in the future — a camera with a wrong clock, or a
+    // copy that preserved such a timestamp — can never look older than a
+    // thumbnail written from the current clock, so it would be judged stale on
+    // every scan for the rest of time. Such a timestamp carries no ordering
+    // information, so fall back to the current clock with a grace window that
+    // absorbs the lag between writing a thumbnail and comparing against it.
+    // Files with a plausible mtime are compared exactly as before, preserving
+    // the self-healing behaviour for in-flight uploads.
+    let now = SystemTime::now();
+    let reference = if src_mtime > now {
+        now.checked_sub(UNTRUSTED_MTIME_GRACE).unwrap_or(SystemTime::UNIX_EPOCH)
+    } else {
+        src_mtime
+    };
+
     match std::fs::metadata(&thumb_path) {
-        Ok(t) => file_mtime(&t) >= src_mtime,
+        Ok(t) => file_mtime(&t) >= reference,
         Err(_) => false, // no thumbnail
+    }
+}
+
+/// Whether a metadata row still needs (re)writing.
+///
+/// A missing row always does. A video row with no duration does too: durations
+/// were not recorded by earlier builds, and the API documents a duration for
+/// videos, so such rows are repaired on the next scan rather than being written
+/// off as complete. Nothing else counts as incomplete — regenerating thumbnails
+/// to refresh a stale value would be far more expensive than the value is
+/// worth.
+fn metadata_incomplete(meta: Option<(u32, u32, Option<u64>, i64)>, fname: &str) -> bool {
+    match meta {
+        None => true,
+        Some((_, _, duration, _)) => util::is_video_file(fname) && duration.is_none(),
     }
 }
 
@@ -241,7 +274,9 @@ fn process_create(root: &Path, db: &Db, rel_path: &str) {
     // date. (If the file happens to be mid-re-upload right now, this could
     // still produce a partial thumbnail once — the self-heal via the final
     // Modify event will fix it, so this residual race is harmless.)
-    if thumb_is_fresh(root, rel_path, file_mtime(&meta)) && db.get_metadata(rel_path).is_some() {
+    if thumb_is_fresh(root, rel_path, file_mtime(&meta))
+        && !metadata_incomplete(db.get_metadata(rel_path), &fname)
+    {
         return;
     }
 
@@ -250,8 +285,9 @@ fn process_create(root: &Path, db: &Db, rel_path: &str) {
     let thumb_path = thumbs_dir.join(util::thumb_name(&fname));
 
     if thumb_is_fresh(root, rel_path, file_mtime(&meta)) {
-        // Thumbnail is up to date but the dimensions cache row is missing.
-        // Read the dimensions without regenerating the thumbnail.
+        // Thumbnail is up to date but the metadata row is missing or partial
+        // (e.g. a video whose duration predates it being recorded). Fill it in
+        // without regenerating the thumbnail.
         update_metadata(root, db, rel_path, &src);
         return;
     }
@@ -262,18 +298,26 @@ fn process_create(root: &Path, db: &Db, rel_path: &str) {
         match thumb::generate_image_thumb(&src, &thumb_path) {
             Ok((w, h)) => {
                 let modified = get_mtime(&src);
-                let _ = db.set_metadata(rel_path, w, h, modified);
+                let _ = db.set_metadata(rel_path, w, h, None, modified);
             }
             Err(e) => {
                 warn!("Failed to generate image thumb for {}: {}", rel_path, e);
             }
         }
     } else if util::is_video_file(&fname) {
-        match thumb::generate_video_thumb(&src, &thumb_path) {
+        // One probe gives both the poster-frame seek offset and the dimensions
+        // and duration to store, so the worker and the API agree on one reading.
+        let info = thumb::probe_video(&src);
+        match thumb::generate_video_thumb(&src, &thumb_path, info.and_then(|i| i.duration_secs)) {
             Ok(()) => {
-                if let Some((w, h)) = thumb::get_video_dimensions(&src) {
-                    let modified = get_mtime(&src);
-                    let _ = db.set_metadata(rel_path, w, h, modified);
+                if let Some(info) = info {
+                    let _ = db.set_metadata(
+                        rel_path,
+                        info.width,
+                        info.height,
+                        info.duration_secs.map(|d| d.round() as u64),
+                        get_mtime(&src),
+                    );
                 }
             }
             Err(e) => {
@@ -284,42 +328,60 @@ fn process_create(root: &Path, db: &Db, rel_path: &str) {
 }
 
 /// Synchronous cleanup for a Remove event.
+///
+/// The event covers either a single media file or a whole folder. A folder
+/// removal is the awkward case: the files that were inside it are gone, so
+/// their rows have to be found by path prefix rather than visited individually.
 fn process_delete(root: &Path, db: &Db, rel_path: String) {
-    thumb::delete_thumb(root, &rel_path);
+    let path = std::path::Path::new(&rel_path);
+    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+
+    if util::is_media_file(fname) {
+        thumb::delete_thumb(root, &rel_path);
+
+        // If a photo was deleted, clear any ancestor folder covers that referenced it.
+        // Covers store the full relative image path, so we match against rel_path.
+        if let Some(parent) = path.parent().and_then(|p| p.to_str()) {
+            let _ = db.delete_cover_if_matches(parent, &rel_path);
+        }
+        // Also check all ancestor folders up the tree
+        let parts: Vec<&str> = rel_path.split('/').collect();
+        for i in 1..parts.len().saturating_sub(1) {
+            let ancestor = parts[..i].join("/");
+            let _ = db.delete_cover_if_matches(&ancestor, &rel_path);
+        }
+    } else {
+        // Not a media file, so this is a removed folder: purge everything the
+        // database recorded beneath it. Skipping this left a row (and a cover
+        // choice) behind for every photo that was in the folder — invisible,
+        // since listings are built from the filesystem, but never reclaimed.
+        let _ = db.delete_metadata_under(&rel_path);
+        let _ = db.delete_covers_under(&rel_path);
+    }
+
     let _ = db.delete_cover(&rel_path);
     let _ = db.delete_metadata(&rel_path);
-
-    // If a photo was deleted, clear any ancestor folder covers that referenced it.
-    // Covers store the full relative image path, so we match against rel_path.
-    let path = std::path::Path::new(&rel_path);
-    if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-        if util::is_media_file(fname) {
-            if let Some(parent) = path.parent().and_then(|p| p.to_str()) {
-                let _ = db.delete_cover_if_matches(parent, &rel_path);
-            }
-            // Also check all ancestor folders up the tree
-            let parts: Vec<&str> = rel_path.split('/').collect();
-            for i in 1..parts.len().saturating_sub(1) {
-                let ancestor = parts[..i].join("/");
-                let _ = db.delete_cover_if_matches(&ancestor, &rel_path);
-            }
-        }
-    }
 }
 
 fn update_metadata(_root: &Path, db: &Db, rel_path: &str, src: &Path) {
     let fname = src.file_name().unwrap_or_default().to_string_lossy();
+    let modified = get_mtime(src);
     if util::is_image_file(&fname) {
-        if let Ok(img) = image::open(src) {
-            let (w, h) = img.dimensions();
-            let modified = get_mtime(src);
-            let _ = db.set_metadata(rel_path, w, h, modified);
+        // Header read plus EXIF orientation, not a full decode: this path runs
+        // for photos whose thumbnail is already current.
+        if let Some((w, h)) = thumb::oriented_dimensions(src) {
+            let _ = db.set_metadata(rel_path, w, h, None, modified);
         }
-    } else if util::is_video_file(&fname) {
-        if let Some((w, h)) = thumb::get_video_dimensions(src) {
-            let modified = get_mtime(src);
-            let _ = db.set_metadata(rel_path, w, h, modified);
-        }
+    } else if util::is_video_file(&fname)
+        && let Some(info) = thumb::probe_video(src)
+    {
+        let _ = db.set_metadata(
+            rel_path,
+            info.width,
+            info.height,
+            info.duration_secs.map(|d| d.round() as u64),
+            modified,
+        );
     }
 }
 
@@ -334,6 +396,24 @@ fn get_mtime(path: &Path) -> i64 {
 
 pub fn scan_existing(root: &Path, db: &Db, tx: &mpsc::UnboundedSender<ThumbJob>) {
     let _ = walk_dir(root, PathBuf::new(), db, tx);
+}
+
+/// Queue thumbnail work for a folder that has just appeared in the tree.
+///
+/// When a folder is moved or copied into the album the watcher reports the
+/// folder itself as one event and says nothing about its contents, so the
+/// subtree has to be enumerated for its media files to be picked up at all.
+/// Without this they stayed thumbnail-less until the service was restarted.
+pub fn scan_subtree(root: &Path, rel: &str, db: &Db, tx: &mpsc::UnboundedSender<ThumbJob>) {
+    // Never descend into a thumbnails folder; doing so would generate a second
+    // generation of thumbnails inside it.
+    if rel.is_empty() || rel.split('/').any(|part| part == "thumbs") {
+        return;
+    }
+    info!("Scanning newly appeared folder: {}", rel);
+    if let Err(e) = walk_dir(root, PathBuf::from(rel), db, tx) {
+        warn!("Failed to scan {}: {}", rel, e);
+    }
 }
 
 fn walk_dir(
@@ -394,7 +474,7 @@ fn walk_dir(
                 // this cheaply at job time, so already-fresh files cost
                 // nothing.
                 let fresh = thumb_is_fresh(root, &rel_str, file_mtime(&meta));
-                if db.get_metadata(&rel_str).is_none() || !fresh {
+                if !fresh || metadata_incomplete(db.get_metadata(&rel_str), &name_str) {
                     let _ = tx.send(ThumbJob::Create { rel_path: rel_str });
                 }
             }

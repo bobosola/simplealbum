@@ -2,11 +2,13 @@
 name = "album"
 version = "0.1.0"
 edition = "2024"
+description = "Self-hosted read-only web photo and video album over an existing folder tree"
+license = "MIT"
+repository = "https://github.com/bobosola/simplealbum"
 
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -53,16 +53,27 @@ fn escape_html(input: &str) -> String {
     out
 }
 
-/// Percent-encode one value the way JavaScript's `encodeURIComponent` does:
-/// every byte outside the unreserved set is escaped. Keeps share URLs
-/// byte-identical to what the frontend would have produced itself.
+/// Percent-encode one value the way JavaScript's `encodeURIComponent` does.
+/// Keeps share URLs byte-identical to what the frontend would have produced
+/// itself, so a link generated here and one generated in the browser are the
+/// same string. Note that `encodeURIComponent` leaves `!'()*` unescaped, so
+/// those must be left alone here too.
 fn encode_component(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for byte in input.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'!'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(byte as char),
             _ => out.push_str(&format!("%{:02X}", byte)),
         }
     }
@@ -317,12 +328,16 @@ pub async fn get_album(
             } else {
                 format!("{}/{}", rel_path, fname_str)
             };
-            let (width, height) = state.db.get_metadata(&photo_rel)
-                .map(|(w, h, _)| (w, h))
-                .unwrap_or((0, 0));
+            let (width, height, duration) = state.db.get_metadata(&photo_rel)
+                .map(|(w, h, duration, _)| (w, h, duration))
+                .unwrap_or((0, 0, None));
             let thumb = format!("thumbs/{}", util::thumb_name(&fname_str));
             let mtype = util::media_type(&fname_str);
-            let duration = if mtype == "video" { Some(0) } else { None };
+            // Duration is only meaningful for videos. It is absent until the
+            // worker has probed the file, and the frontend simply omits it in
+            // that case (previously this was hardcoded to 0, which the
+            // frontend treats as falsy, so it was never displayed at all).
+            let duration = if mtype == "video" { duration } else { None };
             photos.push(PhotoItem {
                 name: fname_str.to_string(),
                 media_type: mtype.to_string(),
@@ -473,7 +488,7 @@ fn find_first_thumb_recursive(root: &std::path::Path, rel: &str) -> Option<Strin
             .ok()?
             .filter_map(|e| e.ok())
             .collect();
-        entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        entries.sort_by_key(|a| a.file_name());
         for entry in entries {
             let name = entry.file_name();
             let s = name.to_string_lossy();
@@ -510,7 +525,7 @@ fn find_first_thumb_recursive(root: &std::path::Path, rel: &str) -> Option<Strin
                 && s != "thumbs"
         })
         .collect();
-    children.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    children.sort_by_key(|a| a.file_name());
 
     for child in &children {
         let child_path = child.path();
@@ -534,7 +549,7 @@ fn find_first_thumb_recursive(root: &std::path::Path, rel: &str) -> Option<Strin
                     && s != "thumbs"
             })
             .collect();
-        gc.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        gc.sort_by_key(|a| a.file_name());
 
         for gc_entry in &gc {
             let gc_path = gc_entry.path();
@@ -573,5 +588,85 @@ fn compute_cover_thumb(folder_path: &str, full_image_path: &str) -> Option<Strin
             Some(format!("{}/thumbs/{}", p.to_string_lossy().replace('\\', "/"), thumb))
         }
         _ => Some(format!("thumbs/{}", thumb)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_html_neutralises_markup_and_quotes() {
+        assert_eq!(
+            escape_html("<img src=\"x\" onerror='y'>&"),
+            "&lt;img src=&quot;x&quot; onerror=&#39;y&#39;&gt;&amp;"
+        );
+        assert_eq!(escape_html("Bob & Karen"), "Bob &amp; Karen");
+    }
+
+    #[test]
+    fn encode_component_matches_encode_uri_component() {
+        let uri = |s: &str| -> String {
+            s.bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || b"-_.~!*'()".contains(&b) {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{:02X}", b)
+                    }
+                })
+                .collect()
+        };
+        for value in [
+            "summer holiday",
+            "a/b",
+            "Bob & Karen's",
+            "(1970) beach!",
+            "caf\u{e9}",
+            "100%_sure*",
+        ] {
+            assert_eq!(encode_component(value), uri(value), "mismatch for {value:?}");
+        }
+        // Separators are structural in a relative path and must survive.
+        assert_eq!(encode_rel_path("1970-79/summer holiday/a b.jpg"), "1970-79/summer%20holiday/a%20b.jpg");
+    }
+
+    #[test]
+    fn origin_of_strips_the_path_and_keeps_scheme_and_host() {
+        assert_eq!(origin_of("https://www.example.org/photos/"), "https://www.example.org");
+        assert_eq!(origin_of("http://localhost:8443/"), "http://localhost:8443");
+        assert_eq!(origin_of("https://example.org"), "https://example.org");
+    }
+
+    #[test]
+    fn breadcrumbs_accumulate_the_path() {
+        let root_crumbs = build_breadcrumbs("");
+        assert_eq!(root_crumbs.len(), 1);
+        assert_eq!(root_crumbs[0].name, "Home");
+        assert_eq!(root_crumbs[0].path, "");
+        let crumbs = build_breadcrumbs("1970-79/1970/summer holiday");
+        assert_eq!(crumbs.len(), 4);
+        assert_eq!(crumbs[1].name, "1970-79");
+        assert_eq!(crumbs[1].path, "1970-79");
+        assert_eq!(crumbs[3].name, "summer holiday");
+        assert_eq!(crumbs[3].path, "1970-79/1970/summer holiday");
+    }
+
+    #[test]
+    fn cover_thumb_is_relative_to_the_covering_folder() {
+        assert_eq!(
+            compute_cover_thumb("1980-89", "1980-89/1981/beach.jpg"),
+            Some("1981/thumbs/beach_thumb.jpg".to_string())
+        );
+        // A cover on the album root is the image's own folder, relative to root.
+        assert_eq!(
+            compute_cover_thumb("", "1980-89/1981/beach.jpg"),
+            Some("1980-89/1981/thumbs/beach_thumb.jpg".to_string())
+        );
+        // Image directly inside the folder the cover is set on.
+        assert_eq!(
+            compute_cover_thumb("1980-89", "1980-89/beach.jpg"),
+            Some("thumbs/beach_thumb.jpg".to_string())
+        );
     }
 }

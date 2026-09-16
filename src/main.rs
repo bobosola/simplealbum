@@ -64,13 +64,25 @@ async fn main() -> anyhow::Result<()> {
     let db = Arc::new(Db::open(&cfg.state.db_path)?);
     let worker = Worker::spawn(cfg.clone(), db.clone());
 
-    // Initial scan
-    info!("Starting initial scan...");
-    scan_existing(&cfg.album.root, &db, &worker.tx);
-    info!("Initial scan queued. Starting watcher and API...");
-
-    // Start filesystem watcher
+    // The watcher is started *before* the initial scan, not after. The scan can
+    // take a while on a large tree, and anything added while it runs would
+    // otherwise be missed entirely until the next restart.
     let _watcher = watcher::start(&cfg.album.root, db.clone(), worker.tx.clone())?;
+
+    // The scan then runs on a blocking thread rather than inline: it walks the
+    // whole photo tree, and there is no reason for the API to be unreachable
+    // while it does. Thumbnail generation is already a background worker, so
+    // the service is usable as soon as this function returns.
+    {
+        let root = cfg.album.root.clone();
+        let db = db.clone();
+        let tx = worker.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            info!("Starting initial scan...");
+            scan_existing(&root, &db, &tx);
+            info!("Initial scan complete. Thumbnail backlog is being worked through.");
+        });
+    }
 
     let state = Arc::new(AppState { config: cfg.clone(), db });
 

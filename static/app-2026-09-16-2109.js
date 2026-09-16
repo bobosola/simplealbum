@@ -120,8 +120,7 @@ function renderGrid() {
     for (const folder of currentAlbum.folders) {
         const card = document.createElement('div');
         card.className = 'card card-folder';
-        const folderPathPrefix = folder.path ? encodePath(folder.path) + '/' : '';
-        const thumbSrc = folder.cover ? `${PHOTO_BASE}/${folderPathPrefix}${folder.cover}` : '';
+        const thumbSrc = folder.cover ? photoUrl(folder.cover, folder.path) : '';
         card.innerHTML = `
             <div class="thumb-wrap">
                 ${thumbSrc ? `<img src="${thumbSrc}" loading="lazy" alt="">` : '<div class="placeholder"></div>'}
@@ -140,7 +139,7 @@ function renderGrid() {
         const photo = currentAlbum.photos[i];
         const card = document.createElement('div');
         card.className = 'card';
-        const thumbSrc = `${PHOTO_BASE}/${encodePath(currentPath)}/${photo.thumb}`;
+        const thumbSrc = photoUrl(photo.thumb);
         const isVideo = photo.type === 'video';
         card.innerHTML = `
             <div class="thumb-wrap">
@@ -185,6 +184,11 @@ function openViewer(index) {
     history.pushState({path: currentPath, view: index}, '');
 }
 
+// Leaves the viewer by undoing the history entry `openViewer` pushed, so that
+// browsing history stays consistent: every exit path (close button, Escape, the
+// up arrow) goes through here. The earlier up-arrow handler hid the viewer
+// without touching history, which left a stale entry behind and made the next
+// browser Back press do nothing.
 function closeViewer() {
     history.back();
 }
@@ -203,7 +207,7 @@ function renderViewerItem() {
     stopViewerVideo();
     const photo = currentAlbum.photos[currentViewerIndex];
     const content = document.getElementById('viewer-content');
-    const src = `${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const src = photoUrl(photo.name);
     content.innerHTML = '';
     if (photo.type === 'video') {
         const video = document.createElement('video');
@@ -231,7 +235,7 @@ function preloadAdjacentImages() {
     for (const idx of indices) {
         const photo = currentAlbum.photos[idx];
         if (photo.type === 'video') continue; // skip video preloading
-        const src = `${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+        const src = photoUrl(photo.name);
 
         // Use a hidden img element to force download + decode in the background
         let preloader = document.getElementById(`preload-${idx}`);
@@ -268,10 +272,6 @@ function viewerNext() {
     }
 }
 
-function viewerUp() {
-    document.getElementById('viewer').classList.add('hidden');
-}
-
 function hideViewer() {
     stopViewerVideo();
     document.getElementById('viewer').classList.add('hidden');
@@ -280,7 +280,7 @@ function hideViewer() {
 
 function viewerDownload() {
     const photo = currentAlbum.photos[currentViewerIndex];
-    const src = `${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    const src = photoUrl(photo.name);
     const a = document.createElement('a');
     a.href = src;
     a.download = photo.name;
@@ -345,7 +345,7 @@ function shareUrl(path, photoName) {
 }
 
 function photoMediaUrl(photo) {
-    return `${window.location.origin}${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+    return `${window.location.origin}${photoUrl(photo.name)}`;
 }
 
 function platformShareUrl(id, target) {
@@ -543,6 +543,18 @@ function encodePath(path) {
     return path.split('/').map(encodeURIComponent).join('/');
 }
 
+// URL under PHOTO_BASE for a path relative to `base` (the folder the item lives
+// under, defaulting to the folder being viewed).
+//
+// Segments are joined explicitly because the obvious template
+// `${PHOTO_BASE}/${base}/${rel}` produces a doubled slash at the album root, and
+// every segment is percent-encoded so that a filename containing '#', '?' or a
+// space cannot truncate the URL or break the request.
+function photoUrl(rel, base = currentPath) {
+    const segments = [base, rel].filter(p => p).map(encodePath).join('/');
+    return `${PHOTO_BASE}/${segments}`;
+}
+
 // History: handle browser back/forward buttons
 window.addEventListener('popstate', e => {
     const state = e.state;
@@ -623,7 +635,7 @@ document.addEventListener('keydown', e => {
 // Event bindings
 document.getElementById('viewer-close').addEventListener('click', closeViewer);
 document.getElementById('viewer-up').addEventListener('click', () => {
-    hideViewer();
+    closeViewer();
 });
 document.getElementById('viewer-prev').addEventListener('click', viewerPrev);
 document.getElementById('viewer-next').addEventListener('click', viewerNext);

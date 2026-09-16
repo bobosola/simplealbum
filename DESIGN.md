@@ -35,7 +35,7 @@ The frontend is plain HTML, CSS, and vanilla JavaScript (ES2020+). No frameworks
 
 - **Caddy** handles TLS, static file serving, and reverse proxying.
 - **Rust** handles the dynamic work: watching the filesystem, resizing images, and maintaining metadata. Keeping this as a separate service avoids embedding a web framework into Caddy or writing Caddy modules.
-- **Cross-platform**: The entire Rust backend compiles on Linux (Debian), macOS, and Windows with zero conditional compilation. The `notify` crate abstracts the OS-specific watcher APIs. Default config paths adapt per platform via the `dirs` crate.
+- **Cross-platform**: The entire Rust backend compiles on Linux (Debian), macOS, and Windows with zero conditional compilation. The `notify` crate abstracts the OS-specific watcher APIs. Configuration never depends on platform conventions: the config file is located solely by the `SIMPLE_ALBUM_CONFIG` environment variable (see [Configuration](#4-configuration)).
 
 ---
 
@@ -176,11 +176,11 @@ Then update the Caddy reverse proxy accordingly.
 - **Location**: A `thumbs/` subfolder inside every directory that contains one or more images.
 - **Naming**: `<original_name>_thumb.<ext>`. Example: `beach.jpg` → `beach_thumb.jpg`.
 - **Size**: Fixed maximum dimension, e.g. 400px width or height, maintaining aspect ratio.
-- **Image thumbnail format**: JPEG at quality 85. If source is PNG with transparency, thumbnail is PNG.
-- **Video thumbnail format**: JPEG at quality 85, 400px max dimension, extracted at the 10% timestamp (or first available keyframe). A small play-icon overlay is rendered by the CSS/frontend; it is not baked into the JPEG.
+- **Image thumbnail format**: Matches the source extension — JPEG for `.jpg`/`.jpeg`, PNG for `.png`, WebP for `.webp` — so the bytes on disk always agree with the `Content-Type` the web server derives from the filename, and transparency in a PNG source survives.
+- **Video thumbnail format**: JPEG, 400px max dimension, extracted at the 10% timestamp of the clip (falling back to one second when the duration cannot be read). A small play-icon overlay is rendered by the CSS/frontend; it is not baked into the JPEG.
 - **EXIF orientation**: The thumbnail worker reads the EXIF `Orientation` tag (via `kamadak-exif`) and rotates the output accordingly. This prevents portrait photos from appearing sideways. The full-size viewing image is served as-is (browsers handle EXIF orientation natively in `<img>` tags since 2019+).
 - **Lifecycle**:
-  - On startup, the service does a quick consistency scan to queue missing or stale thumbnails, then starts the API immediately. Thumbnail generation happens in a **background worker pool** (auto-sized to the CPU core count, clamped to 2–8, and configurable via `[worker] threads`) so the service is usable within seconds even with a large backlog.
+  - On startup, the service starts the filesystem watcher first and then queues missing or stale thumbnails in a **separate background scan**, so the API is listening immediately even with a large backlog. Thumbnail generation happens in a **background worker pool** (auto-sized to the CPU core count, clamped to 2–8, and configurable via `[worker] threads`) so the service is usable within seconds even with a large backlog.
   - At runtime, `notify` (inotify on Linux) watches the album root with **recursive mode**. A single watch covers the entire tree, avoiding `max_user_watches` exhaustion. On `Create`/`Modify` events, jobs enter an **async pre-pass** (see [In-Flight Upload Protection](#in-flight-upload-protection)) before reaching the worker pool. On `Remove` events, thumbnails are deleted synchronously.
   - If a `thumbs/` folder becomes empty, it may be removed.
   - **Video thumbnail generation** uses FFmpeg (system dependency). The worker shells out to `ffmpeg -ss <10pct> -i <input> -vframes 1 -q:v 2 <thumb.jpg>`. Per-job timeouts are not currently implemented (see [Resource Protection & Limits](#resource-protection--limits)); the worker cap and `TasksMax` contain the worst case.
@@ -245,7 +245,7 @@ Response `200 OK`, `text/html`:
 ```html
 <meta property="og:title" content="1981">
 <meta property="og:description" content="Photos and videos in 1980-89 / 1981">
-<meta property="og:image" content="https://album.example.com/photoalbum/1980-89/1981/thumbs/beach_thumb.jpeg">
+<meta property="og:image" content="https://album.example.com/photoalbum/1980-89/1981/thumbs/beach_thumb.jpg">
 <meta http-equiv="refresh" content="0; url=https://album.example.com/#path=1980-89%2F1981">
 ```
 
@@ -506,28 +506,29 @@ In both modes, let the photographs provide the colour. The dark background helps
 ```sql
 CREATE TABLE folder_covers (
     folder_path TEXT PRIMARY KEY,      -- relative path from album root
-    image_name  TEXT NOT NULL,         -- filename of the chosen cover image
+    image_name  TEXT NOT NULL,         -- full relative path of the chosen cover image
     updated_at  INTEGER NOT NULL       -- unix timestamp
 );
 
-CREATE INDEX idx_covers_path ON folder_covers(folder_path);
-
 CREATE TABLE photo_metadata (
     photo_path TEXT PRIMARY KEY,       -- relative path from album root
-    width      INTEGER,
+    width      INTEGER,                -- display dimensions, i.e. after EXIF orientation
     height     INTEGER,
+    duration   INTEGER,                -- seconds, videos only
     modified   INTEGER NOT NULL        -- source file mtime for cache invalidation
 );
-
-CREATE INDEX idx_photo_meta_path ON photo_metadata(photo_path);
 ```
 
-**WAL mode**: The Rust service opens the database with `PRAGMA journal_mode = WAL;`. This allows concurrent reads from the API while the background thumbnail worker writes dimension cache updates, without lock contention.
+No secondary indexes are declared: `folder_path` and `photo_path` are primary
+keys, so SQLite already maintains a unique index for each, and a duplicate index
+on the same column would only cost write time and disk.
+
+**WAL mode**: The Rust service opens the database with `PRAGMA journal_mode = WAL;`, plus `PRAGMA busy_timeout = 5000;` so that a lock held by another process (a backup tool, an operator with `sqlite3` open, or a WAL checkpoint) makes queries wait rather than fail immediately. WAL allows concurrent reads from the API while the background thumbnail worker writes dimension cache updates, without lock contention.
 
 ### Caching Strategy
 
-- **Folder listings**: Read directly from the filesystem on every `GET /api/album` request. `readdir` on a single folder is sub-millisecond on SSD, and this guarantees consistency without invalidation logic.
-- **Image dimensions**: Read from the `photo_metadata` SQLite table. The background thumbnail worker populates this cache as it processes images. If a file's `mtime` has changed since the cached `modified` value, the worker re-reads dimensions and updates the row.
+- **Folder listings**: Read directly from the filesystem on every `GET /api/album` request. `readdir` on a single folder is sub-millisecond on SSD, and this guarantees consistency without invalidation logic. Note that the request as a whole is not a single `readdir`: each subfolder in the response needs a recursive photo/album count for its badge, so the subtrees below the requested folder are walked once between them, and each folder's cover is resolved by looking for a thumbnail in that folder and its immediate children.
+- **Image dimensions**: Read from the `photo_metadata` SQLite table. The background thumbnail worker populates this cache as it processes images; a row that is missing, or is a video row with no duration, is also repaired from the file header without regenerating the thumbnail. If a file's `mtime` has changed since the cached `modified` value, the worker re-reads dimensions and updates the row.
 - **Thumbnails**: Served directly by Caddy as static files — no API involvement.
 - **In-memory LRU**: Can be added later for folder listings if needed, but is not required for the expected scale.
 
