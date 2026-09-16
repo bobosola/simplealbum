@@ -426,9 +426,13 @@ Clipboard writes use `navigator.clipboard`, falling back to field selection plus
 a plain-HTTP origin). The sheet stays open after copying so the link remains
 visible and manually selectable.
 
-**Known limitation:** a photo's share link opens the raw media file, not the viewer
-scrolled to that photo. The hash route encodes only a folder, so there is no URL
-that deep-links into the viewer for a specific item.
+**A photo share delivers the image file itself, by design.** The intention of sharing a
+single photo is to share that photo; anyone who wants browsing context should be given
+a folder link (which opens that folder) or the album root. The hash route encodes only
+a folder, so no URL deep-links into the viewer for a specific item — and deliberately
+no attempt is made to add one, because landing the recipient on a bare image is the
+intended behaviour rather than a shortfall. Do not "fix" this by redirecting photo
+shares into the gallery.
 
 #### Link Previews (Open Graph)
 

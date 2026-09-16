@@ -47,6 +47,10 @@ The script will create a new destination folder if needed, provided that its par
 Here's what's included:
 
 - **Read-only for your photos & videos** — your image and video files are not altered in any way
+- **Album files sit outside your website's document root** — the web server maps the public
+ `/photoalbum/` URL onto the real album directory (e.g. `/var/album`), which is not part of your
+ site's file tree. The photos are public by design, but no album data lives among your website
+ files, so removing the album is a single config-block change.
 - **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first detection in a `thumbs` folder within each image folder and deleted when the parent image is deleted
 - **Simple admin mode to choose folder thumbnails** — pick any photo as the thumbnail for its own folder or any ancestor of it
 - **Live filesystem watcher service** —  the site updates automatically as you add or remove photos
