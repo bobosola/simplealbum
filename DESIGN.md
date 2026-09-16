@@ -163,6 +163,10 @@ If port 8080 is unavailable, change one line in `album.toml`:
 bind = "127.0.0.1:8081"
 ```
 
+**This is an excerpt, not a whole section.** Only the `bind` line changes — `public_url`
+and `site_name` must remain in the real `[server]` block. The service has no built-in
+defaults, so a missing field is a startup failure rather than a fallback.
+
 Then update the Caddy reverse proxy accordingly.
 
 ---
