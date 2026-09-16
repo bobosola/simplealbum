@@ -24,12 +24,22 @@ use crate::{
     worker::{scan_existing, Worker},
 };
 
-fn check_ffmpeg() {
+/// Warn about missing media tools. `ffprobe` is checked separately from
+/// `ffmpeg`: it is a distinct binary that some split packages and minimal
+/// container images omit, and without it video metadata probing silently
+/// returns nothing (so videos get no duration and no dimensions).
+fn check_media_tools() {
     if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
         warn!("FFmpeg not found on PATH. Video thumbnail generation will be unavailable.");
         warn!("Install FFmpeg: https://ffmpeg.org/download.html");
     } else {
         info!("FFmpeg detected.");
+    }
+    if std::process::Command::new("ffprobe").arg("-version").output().is_err() {
+        warn!("ffprobe not found on PATH. Video dimensions and durations will be unavailable.");
+        warn!("It is normally installed with FFmpeg. See https://ffmpeg.org/download.html");
+    } else {
+        info!("ffprobe detected.");
     }
 }
 
@@ -59,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     // every deployment the same wrong domain.
     info!("Admin URL: {}#admin={}", cfg.server.public_url, cfg.admin.key);
 
-    check_ffmpeg();
+    check_media_tools();
 
     let db = Arc::new(Db::open(&cfg.state.db_path)?);
     let worker = Worker::spawn(cfg.clone(), db.clone());

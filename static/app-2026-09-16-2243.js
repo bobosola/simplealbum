@@ -131,6 +131,7 @@ function renderGrid() {
             </div>
         `;
         card.addEventListener('click', () => navigateTo(folder.path));
+        attachThumbFallback(card);
         grid.appendChild(card);
     }
 
@@ -163,8 +164,30 @@ function renderGrid() {
                 openCoverModal(photo);
             });
         }
+        attachThumbFallback(card);
         grid.appendChild(card);
     }
+}
+
+// Swap a thumbnail that fails to load for the same muted placeholder used when
+// no cover is known. A thumbnail can legitimately be missing (the background
+// worker has not reached the file yet), and the API does not report whether one
+// exists, so the failure is detected in the browser instead. Without this the
+// card shows a broken-image glyph. `error` listeners are used rather than an
+// inline `onerror` attribute because the documented Content-Security-Policy
+// forbids inline script.
+function attachThumbFallback(card) {
+    const img = card.querySelector('.thumb-wrap img');
+    if (!img) return;
+    const fallback = () => {
+        if (!img.parentNode) return;
+        const placeholder = document.createElement('div');
+        placeholder.className = 'placeholder';
+        img.replaceWith(placeholder);
+    };
+    img.addEventListener('error', fallback);
+    // A cached failure can fire before the listener is attached.
+    if (img.complete && img.naturalWidth === 0) fallback();
 }
 
 function formatDuration(sec) {
@@ -474,7 +497,11 @@ function openCoverModal(photo) {
     const container = document.getElementById('cover-checkboxes');
     container.innerHTML = '';
 
-    const folders = [];
+    // The album root is the empty path and is offered alongside every ancestor
+    // of the image, so any photo can also become the cover of the whole album.
+    // It is not derivable from `currentPath` (which is empty when the root
+    // itself is being browsed, leaving the list otherwise blank).
+    const folders = [{ name: 'Home', path: '' }];
     let accum = '';
     for (const part of currentPath.split('/').filter(p => p)) {
         accum = accum ? `${accum}/${part}` : part;
@@ -488,7 +515,9 @@ function openCoverModal(photo) {
         checkbox.value = folder.path;
         checkbox.checked = folder.path === currentPath;
         label.appendChild(checkbox);
-        label.appendChild(document.createTextNode(escapeHtml(folder.name)));
+        // Plain text node: no HTML escaping here, or the entities would be
+        // shown literally (`Fish &amp; Chips`).
+        label.appendChild(document.createTextNode(folder.name));
         container.appendChild(label);
     }
 
@@ -504,7 +533,6 @@ async function confirmCover() {
         return;
     }
     const imagePath = currentPath ? `${currentPath}/${coverModalPhoto.name}` : coverModalPhoto.name;
-    console.log('Setting cover:', { imagePath, targets });
     const res = await fetch(`${API_BASE}/cover`, {
         method: 'POST',
         headers: {
@@ -513,7 +541,6 @@ async function confirmCover() {
         },
         body: JSON.stringify({ image_path: imagePath, targets }),
     });
-    console.log('Cover response:', res.status);
     if (res.ok) {
         showToast('Cover set');
         await loadAlbum(currentPath);
@@ -533,10 +560,19 @@ function closeCoverModal() {
 }
 
 // Helpers
+//
+// Escapes for use in both text and quoted attribute values. The `div.innerHTML`
+// trick escapes only `&`, `<` and `>`, which is enough for text nodes but not
+// for the `alt="..."` and `data-path="..."` attributes this file also builds:
+// an unescaped double quote in a filename would close the attribute and let the
+// rest of the name inject markup. Quotes are therefore escaped explicitly.
 function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function encodePath(path) {

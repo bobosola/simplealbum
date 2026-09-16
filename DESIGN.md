@@ -181,9 +181,9 @@ Then update the Caddy reverse proxy accordingly.
 - **EXIF orientation**: The thumbnail worker reads the EXIF `Orientation` tag (via `kamadak-exif`) and rotates the output accordingly. This prevents portrait photos from appearing sideways. The full-size viewing image is served as-is (browsers handle EXIF orientation natively in `<img>` tags since 2019+).
 - **Lifecycle**:
   - On startup, the service starts the filesystem watcher first and then queues missing or stale thumbnails in a **separate background scan**, so the API is listening immediately even with a large backlog. Thumbnail generation happens in a **background worker pool** (auto-sized to the CPU core count, clamped to 2–8, and configurable via `[worker] threads`) so the service is usable within seconds even with a large backlog.
-  - At runtime, `notify` (inotify on Linux) watches the album root with **recursive mode**. A single watch covers the entire tree, avoiding `max_user_watches` exhaustion. On `Create`/`Modify` events, jobs enter an **async pre-pass** (see [In-Flight Upload Protection](#in-flight-upload-protection)) before reaching the worker pool. On `Remove` events, thumbnails are deleted synchronously.
+  - At runtime, `notify` (inotify on Linux) watches the album root with **recursive mode**. A single watch covers the entire tree, avoiding `max_user_watches` exhaustion. On `Create`/`Modify` events, jobs enter an **async pre-pass** (see [In-Flight Upload Protection](#in-flight-upload-protection)) before reaching the worker pool. A `Modify` that names a media path which no longer exists is treated as a delete, which is how a rename or move (reported as a `Modify` on the *old* path) cleans up after itself. The end-of-write event (`Close(Write)`, `IN_CLOSE_WRITE` on Linux) is also fed in as a retry, so a file deferred by the stability gate is always re-examined once writing has finished. On `Remove` events, thumbnails are deleted synchronously.
   - If a `thumbs/` folder becomes empty, it may be removed.
-  - **Video thumbnail generation** uses FFmpeg (system dependency). The worker shells out to `ffmpeg -ss <10pct> -i <input> -vframes 1 -q:v 2 <thumb.jpg>`. Per-job timeouts are not currently implemented (see [Resource Protection & Limits](#resource-protection--limits)); the worker cap and `TasksMax` contain the worst case.
+  - **Video thumbnail generation** uses FFmpeg (system dependency). The worker shells out to `ffmpeg -ss <10pct> -i <input> -vframes 1 -q:v 2 <thumb.jpg>`, and both that call and the `ffprobe` metadata probe are killed if they exceed a fixed timeout (30 s and 20 s respectively). Without that limit a malformed container or an unresponsive mount could hold one of only 2–8 worker permits for the lifetime of the process — a stop-the-world failure for thumbnail generation that systemd cannot see, because the process has not died.
   - **Error handling during generation**: If a file cannot be decoded (corrupt image, unsupported format, FFmpeg failure), the worker logs a warning, skips the file, and moves on. The file does not appear in API listings until it can be processed successfully.
 
 **Rationale**: The user explicitly wants thumbnails co-located with photos. This integrates seamlessly with Caddy's static file server — no special routing rules are needed.
@@ -209,7 +209,7 @@ The service is designed to accept **unlimited** upload volumes (bounded only by 
 - **Bounded tasks via `TasksMax`.** The service's OS thread count plus any FFmpeg child processes stays well under the limit (measured peak ~33 with 8 workers on video-heavy input; ~20 at 2 workers); `TasksMax=50` leaves comfortable headroom.
 - **`MemoryMax` sizing per server class.** Default unit: `MemoryMax=1G` (covers 8 workers on 24 MP photos). Small servers (≤4 cores, auto workers ≤ 4): `[worker] threads = 2` (or leave auto) with `MemoryMax=512M`. The two knobs trade off against each other — operators raise one or lower the other.
 - **Failure safety.** Thumbnails are never left half-written (atomic rename); an OOM kill is recovered by `Restart=always`, and the startup scan re-queues any thumbnails lost to the kill. The service can never wedge in a state that corrupts the photo tree.
-- **Videos** add FFmpeg child processes (memory included in the limits above); their count is bounded by the worker semaphore. Note: per-job timeouts are not yet implemented in code — FFmpeg extraction of a pathological input could hold a worker slot for a long time; this is a known gap to close (the worker cap and `TasksMax` contain the blast radius).
+- **Videos** add FFmpeg child processes (memory included in the limits above); their count is bounded by the worker semaphore, and each `ffmpeg`/`ffprobe` invocation is killed after a fixed timeout (see [Thumbnail Strategy](#5-thumbnail-strategy)), so a pathological input cannot pin a permit indefinitely. Everything else is bounded by the worker cap and `TasksMax`.
 
 Sizing guide: see [Deployment](#9-deployment) and `DEPLOY.md` for the complete unit files and troubleshooting table.
 
@@ -664,6 +664,7 @@ The frontend is the primary XSS surface because folder names and filenames origi
 **Rules:**
 - Use `textContent` for all user-controlled strings (folder names, filenames, breadcrumb labels). Never use `innerHTML`.
 - Photo viewer captions and alt text must also use `textContent`.
+- When a value *must* be interpolated into markup (e.g. `alt="..."`, `data-path="..."`), the helper must escape `&`, `<`, `>`, `"` **and** `'`. Note that the common `div.textContent` + `div.innerHTML` trick escapes only the first three: it is sufficient for text nodes and unsafe for quoted attributes.
 - An XSS vulnerability would allow an attacker to exfiltrate the admin key from `localStorage` and modify covers.
 
 ### Admin Key Protection
@@ -680,12 +681,16 @@ The API lives behind the same origin as the frontend via Caddy reverse proxy. **
 2. The backend does not respond to OPTIONS from foreign origins.
 3. The browser blocks the actual request.
 
-For defence in depth, the backend also validates the `Origin` header on POST requests.
+For defence in depth, the backend also validates the `Origin` header on POST requests: a present `Origin` that does not match `server.public_url` is rejected with `403`. A *missing* header is allowed, so `curl` and other non-browser callers still work. The check is a second line of defence only — the custom `X-Admin-Key` header is what actually stops a foreign origin, because it forces a preflight the browser will not satisfy.
+
+### Symbolic Links
+
+Symlinked **directories** inside the album tree are listed but never traversed: the recursive scan, the subtree count, and the cover search all read the entry type with `file_type()`, which reports a symlink as a symlink rather than what it points at. Following them would allow a self-referential link (`album/loop → album`) to walk forever — in the API's case while holding an async worker thread — and would let a link to `/` pull unrelated files into the album's thumbnail queue. Symlinked **files** are still processed, since a link to a photo is a reasonable way to include one. The consequence to know about: a folder that exists only as a symlink is shown without counts or covers.
 
 ### Malicious File DoS
 
 - There is currently no per-file size limit for thumbnail generation (a configurable limit, e.g. 50 MB, is planned but not yet implemented); very large files cost CPU and decode memory, contained by the worker cap and `CPUQuota`.
-- Per-job timeouts are not implemented; the systemd `MemoryMax`, `CPUQuota`, and `TasksMax` directives contain the blast radius of a pathological file (see [Resource Protection & Limits](#resource-protection--limits)).
+- Per-job timeouts cover the external tools: every `ffmpeg` and `ffprobe` invocation is killed after a fixed limit, so a pathological video cannot pin a worker permit. A very large *image* still has no size or time limit, and is contained by the worker cap, `CPUQuota`, and `MemoryMax` (see [Resource Protection & Limits](#resource-protection--limits)).
 - The systemd `MemoryMax` and `CPUQuota` directives contain runaway resource consumption.
 - The `image` crate is pure Rust and memory-safe.
 

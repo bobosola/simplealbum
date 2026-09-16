@@ -370,10 +370,29 @@ pub async fn set_cover(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    // Defence in depth against CSRF, as `DESIGN.md` documents. The custom
+    // `X-Admin-Key` header already forces a preflight that a foreign origin
+    // cannot satisfy, but a browser sends `Origin` on every POST, so a
+    // mismatch is rejected outright. An absent header is allowed so that curl
+    // and other non-browser callers keep working.
+    if let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        && !origin.is_empty()
+        && !origin.eq_ignore_ascii_case(origin_of(&state.config.server.public_url))
+    {
+        warn!("set_cover rejected: origin '{}' does not match public_url", origin);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let image_path = util::validate_path(&body.image_path).ok_or(StatusCode::BAD_REQUEST)?;
     let image_abs = util::resolve_album_path(&state.config.album.root, &image_path)
         .ok_or(StatusCode::BAD_REQUEST)?;
-    if !image_abs.exists() {
+    // It must be a real media file, not a directory and not a stray non-media
+    // file. A stored cover is consulted before the computed fallback, so a bad
+    // value would leave that folder showing a placeholder until it is changed
+    // by hand.
+    if !image_abs.is_file() || !util::is_media_file(&image_path) {
         return Err(StatusCode::NOT_FOUND);
     }
 
@@ -449,8 +468,22 @@ fn count_contents(root: &std::path::Path, rel: &str) -> (usize, usize) {
             if s.starts_with('.') || s == "thumbs" {
                 continue;
             }
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
+            // `file_type()` reads the entry type from the directory itself, so
+            // it needs no extra `stat` per entry and — unlike `metadata()` — it
+            // does not follow symlinks. That matters here as much as in the
+            // worker's walk: a symlink pointing back up the tree would make
+            // this walk run forever while holding an async worker thread, and
+            // one pointing outside the album would count files the album does
+            // not own. Symlinked files are still counted via the metadata()
+            // fallback below; symlinked directories are skipped.
+            let Ok(file_type) = entry.file_type() else { continue };
+            let is_symlink = file_type.is_symlink();
+            let is_dir = if is_symlink {
+                entry.metadata().map(|m| m.is_dir()).unwrap_or(false)
+            } else {
+                file_type.is_dir()
+            };
+            if is_dir && !is_symlink {
                 if is_top_level {
                     albums += 1;
                 }
@@ -460,7 +493,7 @@ fn count_contents(root: &std::path::Path, rel: &str) -> (usize, usize) {
                     format!("{}/{}", current_rel, s)
                 };
                 stack.push((sub_rel, false));
-            } else if util::is_media_file(&s) {
+            } else if !is_dir && util::is_media_file(&s) {
                 photos += 1;
             }
         }
@@ -484,6 +517,23 @@ fn find_first_thumb_recursive(root: &std::path::Path, rel: &str) -> Option<Strin
         if !thumbs_dir.is_dir() {
             return None;
         }
+        // Stems of the media files actually present in this folder. A thumbnail
+        // is only offered as a cover when its source still exists: after a
+        // rename or delete the old `*_thumb.jpg` can survive in `thumbs/`, and
+        // without this check it would be adopted as the folder's cover and
+        // point at a photo that is no longer in the album. A thumbnail always
+        // lives beside its source, so this never rejects a legitimate one.
+        let sources: std::collections::HashSet<String> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter(|e| util::is_media_file(&e.file_name().to_string_lossy()))
+            .filter_map(|e| {
+                let name = e.file_name();
+                let stem = std::path::Path::new(&name).file_stem()?;
+                Some(stem.to_string_lossy().into_owned())
+            })
+            .collect();
+
         let mut entries: Vec<_> = std::fs::read_dir(&thumbs_dir)
             .ok()?
             .filter_map(|e| e.ok())
@@ -495,7 +545,10 @@ fn find_first_thumb_recursive(root: &std::path::Path, rel: &str) -> Option<Strin
             if s.starts_with('.') {
                 continue;
             }
-            return Some(s.to_string());
+            let Some((stem, _)) = s.rsplit_once("_thumb.") else { continue };
+            if sources.contains(stem) {
+                return Some(s.to_string());
+            }
         }
         None
     };

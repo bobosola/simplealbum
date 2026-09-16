@@ -73,14 +73,17 @@ impl Worker {
             while let Some(job) = rx.recv().await {
                 match job {
                     ThumbJob::Delete { rel_path } => {
-                        // Deletes are cheap (an unlink plus a few indexed
-                        // SQL deletes) and never race an in-flight write,
-                        // so no stability pre-pass is needed.
+                        // Deletes are cheap (an unlink plus a few indexed SQL
+                        // deletes) and never race an in-flight write, so no
+                        // stability pre-pass is needed. They also take no
+                        // worker permit: the permit bounds the *memory* of
+                        // full-frame decodes, and a delete holds none. Waiting
+                        // for one here would suspend this receive loop, so a
+                        // burst of deletes arriving while all workers were busy
+                        // decoding would stall every queued job behind it.
                         let root = root.clone();
                         let db = db.clone();
-                        let permit = semaphore.clone().acquire_owned().await.unwrap();
                         tokio::task::spawn_blocking(move || {
-                            let _permit = permit;
                             process_delete(&root, &db, rel_path);
                         });
                     }
@@ -162,6 +165,16 @@ async fn await_stable(root: &Path, db: &Db, rel_path: &str) -> bool {
     let thumb_fresh = thumb_is_fresh(root, rel_path, file_mtime(&meta));
     if thumb_fresh && !metadata_incomplete(db.get_metadata(rel_path), &fname) {
         return false; // nothing to do
+    }
+
+    // An empty file is not a small file, it is a file that has not been written
+    // yet. Two samples of `(0, mtime)` look identical, so without this check a
+    // freshly created placeholder would pass the stability gate and be decoded
+    // (logging a decode failure every time). Defer instead: the write that
+    // fills it fires another event, and the file is judged then.
+    if meta.len() == 0 {
+        debug!("Empty file, deferring: {}", rel_path);
+        return false;
     }
 
     let mut last = (meta.len(), file_mtime(&meta));
@@ -344,7 +357,11 @@ fn process_delete(root: &Path, db: &Db, rel_path: String) {
         if let Some(parent) = path.parent().and_then(|p| p.to_str()) {
             let _ = db.delete_cover_if_matches(parent, &rel_path);
         }
-        // Also check all ancestor folders up the tree
+        // Also check all ancestor folders up the tree. The album root is the
+        // empty path, which `parent()` only yields for a file sitting directly
+        // in the root, so it has to be checked separately: a root cover chosen
+        // from a subfolder's photo would otherwise outlive the photo.
+        let _ = db.delete_cover_if_matches("", &rel_path);
         let parts: Vec<&str> = rel_path.split('/').collect();
         for i in 1..parts.len().saturating_sub(1) {
             let ancestor = parts[..i].join("/");
@@ -447,21 +464,46 @@ fn walk_dir(
             if name_str.starts_with('.') || name_str == "thumbs" {
                 continue;
             }
-            let meta = match entry.metadata() {
-                Ok(m) => m,
+            // `file_type()` reports what the directory entry *is*, which for a
+            // symlink is the link itself rather than its target. That is what
+            // makes a self-referential link (`photos/loop -> photos`) visible
+            // and skippable: `metadata()` follows the link, reports
+            // `is_dir()` for it, and the walk then pushes it and loops forever.
+            // Symlinked *files* are still processed, because the metadata()
+            // call below resolves them.
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
                 Err(e) => {
-                    warn!("Failed to read metadata for {}: {}", entry.path().display(), e);
+                    warn!("Failed to read file type for {}: {}", entry.path().display(), e);
                     continue;
                 }
+            };
+            let is_symlink = file_type.is_symlink();
+            let is_dir = if is_symlink {
+                entry.metadata().map(|m| m.is_dir()).unwrap_or(false)
+            } else {
+                file_type.is_dir()
             };
             let sub_rel = if current_rel.as_os_str().is_empty() {
                 PathBuf::from(&*name_str)
             } else {
                 current_rel.join(&*name_str)
             };
-            if meta.is_dir() {
-                stack.push(sub_rel);
+            if is_dir {
+                // A directory reached through a symlink is never descended
+                // into, for the loop reason above and because it may point
+                // outside the album root entirely.
+                if !is_symlink {
+                    stack.push(sub_rel);
+                }
             } else if util::is_media_file(&name_str) {
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!("Failed to read metadata for {}: {}", entry.path().display(), e);
+                        continue;
+                    }
+                };
                 let rel_str = sub_rel.to_string_lossy().replace('\\', "/");
                 // Queue regeneration when the thumbnail is missing or stale
                 // (source newer than thumbnail), not just when missing.

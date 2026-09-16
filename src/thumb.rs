@@ -1,12 +1,27 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use image::metadata::Orientation;
 use image::{GenericImageView, ImageReader, imageops::FilterType};
 use tracing::warn;
 
 /// Longest edge of a generated thumbnail, in pixels.
 const THUMB_MAX_DIM: u32 = 400;
+
+/// How long `ffprobe` may take to read a container's metadata.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long `ffmpeg` may take to extract one poster frame.
+///
+/// Both limits exist because the worker is a blocking context holding one of
+/// only 2-8 generation permits, and there is no way to cancel a synchronous
+/// `Command::output()` from outside it. A malformed container or an
+/// unresponsive network mount would otherwise hold a permit for the lifetime of
+/// the process, so a handful of bad files could stop thumbnail generation
+/// permanently — with nothing for systemd's `Restart=always` to react to,
+/// because the process has not died.
+const EXTRACT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Monotonic per-process counter for unique temp filenames. Duplicate jobs
 /// for the same source (inotify emits several events per in-flight write,
@@ -23,6 +38,62 @@ fn tmp_path(dst: &Path) -> PathBuf {
     let n = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let fname = dst.file_name().unwrap_or_default().to_string_lossy();
     dst.with_file_name(format!(".{}.{}.tmp", n, fname))
+}
+
+/// Run a child process to completion, killing it if it outlives `timeout`.
+///
+/// Same contract as [`Command::output`] — stdin closed, both output pipes
+/// captured — with a deadline, so one pathological input cannot pin a worker
+/// permit forever. Both pipes are drained on their own threads: a child that
+/// writes more than a pipe buffer while we are only polling `try_wait()` would
+/// otherwise block on its next write and never exit, which would defeat the
+/// timeout entirely.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> anyhow::Result<Output> {
+    use std::io::Read;
+
+    /// Drain a pipe on its own thread so the child can never block on a full
+    /// pipe buffer while we are only polling `try_wait()`.
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout_drain = drain(child.stdout.take());
+    let stderr_drain = drain(child.stderr.take());
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            // Kill, then reap: the pipes close, so the draining threads finish
+            // and the joins below cannot block.
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let stdout = stdout_drain.join().unwrap_or_default();
+    let stderr = stderr_drain.join().unwrap_or_default();
+
+    match status {
+        Some(status) => Ok(Output { status, stdout, stderr }),
+        None => anyhow::bail!("process exceeded the {timeout:?} timeout and was killed"),
+    }
 }
 
 /// The source file's EXIF orientation, or `NoTransforms` when there is none.
@@ -143,20 +214,20 @@ pub struct VideoInfo {
 /// that covers the whole clip, which is what a "10% in" seek needs. A missing
 /// or unparseable duration is not an error — dimensions alone are still useful.
 pub fn probe_video(src: &Path) -> Option<VideoInfo> {
-    let output = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height:format=duration",
-            "-of",
-            "json",
-        ])
-        .arg(src)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("ffprobe");
+    cmd.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height:format=duration",
+        "-of",
+        "json",
+    ])
+    .arg(src);
+
+    let output = run_with_timeout(&mut cmd, PROBE_TIMEOUT).ok()?;
 
     if !output.status.success() {
         return None;
@@ -205,12 +276,13 @@ pub fn generate_video_thumb(
 
     // Paths are passed as `OsStr` arguments rather than `to_str().unwrap()`: a
     // filename that is not valid UTF-8 used to panic the worker thread.
-    let output = Command::new("ffmpeg")
-        .args(["-ss", seek_arg.as_str(), "-i"])
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-ss", seek_arg.as_str(), "-i"])
         .arg(src)
         .args(["-vframes", "1", "-q:v", "2", "-f", "image2", "-y"])
-        .arg(&tmp)
-        .output()?;
+        .arg(&tmp);
+
+    let output = run_with_timeout(&mut cmd, EXTRACT_TIMEOUT)?;
 
     if !output.status.success() {
         let _ = std::fs::remove_file(&tmp);
@@ -298,5 +370,29 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a.parent(), dst.parent());
         assert!(a.file_name().unwrap().to_string_lossy().starts_with('.'));
+    }
+
+    // Unix-only because the helpers used as stand-in children (`true`, `sleep`)
+    // are not guaranteed to exist on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_returns_output_for_a_fast_child() {
+        let mut cmd = Command::new("echo");
+        cmd.arg("hello");
+        let out = run_with_timeout(&mut cmd, Duration::from_secs(10)).unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_kills_a_child_that_overruns() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let started = Instant::now();
+        let err = run_with_timeout(&mut cmd, Duration::from_millis(300)).unwrap_err();
+        // It must give up promptly rather than waiting out the child.
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(err.to_string().contains("timeout"), "unexpected error: {err}");
     }
 }

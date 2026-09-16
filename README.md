@@ -18,7 +18,7 @@ It's a single Rust binary with a static front end consisting of:
 - one vanilla JS file
 - one PNG (`og-image.png`), used as the link-preview image when the site is shared
 
-The CSS and JS filenames are versioned (e.g. `style-YYYY-MM-DD-HHMM.css`) and renamed on every change, so browsers can cache them for a year without ever going stale. The PNG is optional — replace it with any 1200x630 image, or delete it and the four `og:image`/`twitter:image` tags that reference it.
+The CSS and JS filenames are versioned (e.g. `style-YYYY-MM-DD-HHMM.css`) and renamed on every change. Serve them with a long-lived immutable cache header (`Cache-Control: public, max-age=31536000, immutable` — the sample Caddy configs in [`DEPLOY.md`](DEPLOY.md) and `Caddyfile.local` do this) and browsers can keep them for a year without ever going stale. The PNG is optional — replace it with any 1200x630 image, or delete it and the four `og:image`/`twitter:image` tags that reference it.
 
 You can deploy these in the site root as a stand-alone photo album site or in a subfolder such as `/photos` as a part of another site. Edit the CSS and HTML to your taste, set `public_url` and `site_name` in `album.toml` (the latter should match your `<h1>`), and see [Customising the frontend for your deployment](DEPLOY.md#customising-the-frontend-for-your-deployment) for the full list of deployment-specific values. No build step or framework is required.
 
@@ -40,6 +40,11 @@ You will then be prompted for:
 - your SSH password or keyphrase
 
 The script will create a new destination folder if needed, provided that its parent path exists. There are some perms options you can set in the script if you need them, but the defaults should be fine for the simple case of uploading to a web server.
+
+Two practical notes:
+
+- **Awkward filenames:** the drag-and-drop prompt re-parses what you paste as shell words, so names containing `'`, `&`, `(` or `)` can confuse it. Pass those as quoted arguments instead — `./sync_photos.sh "Bob's 50th.jpg"` — which bypasses the prompt entirely.
+- **`rsync` version:** creating a missing remote parent directory uses `--mkpath`, which needs rsync 3.2.3 or newer. That is fine on Debian, but the `rsync` bundled with macOS is much older, so install a current one first (`brew install rsync`).
 
 
 # Features
@@ -71,6 +76,12 @@ These features have been deliberately omitted (KISS principle again):
 - No ability to allow different user perms — everyone can see all the photos
 - No intermediate (space-consuming) range of thumbnail sizes — you get just the default ones
 - No image editing features
+
+# Known Limitations
+
+- **Symlinked folders are listed but not traversed.** A folder that exists only as a symbolic link inside the album tree appears in the gallery but is not descended into, so it shows no photo counts and no cover. This is deliberate: following links would let a self-referential one (`album/loop → album`) walk forever. Symlinked individual photo files work normally.
+- **Two media files with the same name stem in one folder share a thumbnail.** Videos are always thumbnailed as JPEG, so `clip.mp4` and `clip.mov` in the same folder both map to `clip_thumb.jpg` and will overwrite one another; the same applies to `photo.JPG` and `photo.jpg` on a case-sensitive filesystem. Keep stems unique within a folder.
+- **Cover fallback looks three levels down.** A folder's cover is taken from the folder itself, an immediate child, or a grandchild. A folder whose only photos sit deeper than that shows a placeholder (an admin can still set one by hand).
 
 ---
 

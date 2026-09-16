@@ -134,11 +134,16 @@ impl Db {
     /// to be purged by prefix or they are orphaned forever. `substr` is used
     /// instead of `LIKE` so that a folder name containing `%` or `_` cannot
     /// match unrelated rows.
+    ///
+    /// The length is `length(?1) + 1` because the right-hand side includes the
+    /// separator: comparing an N-character prefix against the N+1-character
+    /// string `folder || '/'` can never be true, which made an earlier version
+    /// of this query a silent no-op.
     pub fn delete_metadata_under(&self, folder_path: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM photo_metadata
-             WHERE substr(photo_path, 1, length(?1)) = ?1 || '/'",
+             WHERE substr(photo_path, 1, length(?1) + 1) = ?1 || '/'",
             params![folder_path],
         )?;
         Ok(())
@@ -150,7 +155,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM folder_covers
-             WHERE substr(image_name, 1, length(?1)) = ?1 || '/'",
+             WHERE substr(image_name, 1, length(?1) + 1) = ?1 || '/'",
             params![folder_path],
         )?;
         Ok(())

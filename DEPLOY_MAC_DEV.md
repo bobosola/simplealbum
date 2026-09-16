@@ -140,12 +140,17 @@ INFO album: API binding: 127.0.0.1:18080
 INFO album: Admin key: xxxxxxxxxxxx
 INFO album: Admin URL: https://localhost:8443/#admin=xxxxxxxxxxxx
 INFO album: FFmpeg detected.
+INFO album: ffprobe detected.
 INFO album::db: Database opened with WAL mode: /Users/bobosola/Sites/simplealbum/album.db
-INFO album: Starting initial scan...
-INFO album: Initial scan queued. Starting watcher and API...
+INFO album::worker: Thumbnail worker: 8 concurrent jobs configured
 INFO album::watcher: Filesystem watcher started on /Users/bobosola/photos
+INFO album: Initial scan complete. Thumbnail backlog is being worked through.
 INFO album: API server listening on 127.0.0.1:18080
 ```
+
+(The exact ordering of the last few lines varies: the startup scan runs on a
+background thread, and the API begins listening as soon as the listener is
+bound, so the scan's "complete" line may appear before or after it.)
 
 **Copy the Admin URL from the log** and bookmark it. That URL (with the `#admin=...` fragment) puts your browser into admin mode.
 
@@ -171,6 +176,11 @@ localhost:8443 {
     # Static frontend assets
     root * /Users/bobosola/Sites/simplealbum/static
     file_server
+
+    # Versioned CSS/JS names carry a build timestamp, so a long immutable
+    # cache is safe: a changed file always arrives under a new name.
+    @versioned path *.css *.js
+    header @versioned Cache-Control "public, max-age=31536000, immutable"
 
     # API reverse proxy
     reverse_proxy /api/* localhost:18080

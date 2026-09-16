@@ -333,7 +333,7 @@ sudo systemctl enable --now album-service
 sudo journalctl -u album-service -f
 ```
 
-Watch the journal for the generated admin key and URL.
+Watch the journal for the admin URL built from the `admin.key` you set above.
 
 ### 1.7 Caddy Configuration
 
@@ -344,6 +344,11 @@ album.example.com {
     # Static frontend assets
     root * /var/www/album-static
     file_server
+
+    # The CSS/JS filenames carry a build timestamp, so a one-year immutable
+    # cache is safe: a changed file always arrives under a new name.
+    @versioned path *.css *.js
+    header @versioned Cache-Control "public, max-age=31536000, immutable"
 
     # API reverse proxy
     reverse_proxy /api/* localhost:8080
@@ -529,6 +534,9 @@ localhost {
     root * /Users/YOUR_USERNAME/Sites/album-static
     file_server
 
+    @versioned path *.css *.js
+    header @versioned Cache-Control "public, max-age=31536000, immutable"
+
     reverse_proxy /api/* localhost:8080
 
     handle_path /photoalbum/* {
@@ -694,6 +702,9 @@ localhost:8443 {
 
     root * C:\album-static
     file_server
+
+    @versioned path *.css *.js
+    header @versioned Cache-Control "public, max-age=31536000, immutable"
 
     reverse_proxy /api/* localhost:8080
 

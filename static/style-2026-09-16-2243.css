@@ -280,6 +280,18 @@ header h1 {
     display: flex;
 }
 
+/* Touch devices have no hover state, so the cover button would be unreachable
+   there. In admin mode it is shown permanently instead. */
+@media (hover: none) {
+    .card .set-cover-btn {
+        display: flex;
+        /* Slightly larger than the hover-only pointer target, for thumbs. */
+        width: 34px;
+        height: 34px;
+        font-size: 16px;
+    }
+}
+
 .viewer {
     position: fixed;
     inset: 0;

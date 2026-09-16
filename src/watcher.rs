@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::db::Db;
+use crate::util;
 use crate::worker::{self, ThumbJob};
 
 /// Start the recursive filesystem watcher.
@@ -64,6 +65,30 @@ pub fn start(
                             // as one event for the folder; its files are not
                             // reported individually, so walk it.
                             scan_folder(&handle, &root, &db, &tx, &scanning, rel_str);
+                        } else if util::is_media_file(&rel_str) {
+                            // A rename or move is delivered as a Modify naming
+                            // the *old* path, where nothing exists any more. It
+                            // is not a Remove, so without this branch the stale
+                            // thumbnail and metadata row would never be cleaned
+                            // up — and the orphaned `*_thumb.jpg` could later be
+                            // adopted as that folder's cover. Treat a vanished
+                            // media path as a delete; the destination path
+                            // arrives as its own event and is regenerated there.
+                            let _ = tx.send(ThumbJob::Delete { rel_path: rel_str });
+                        }
+                    }
+                    // `IN_CLOSE_WRITE` (and its equivalents) is the "this file
+                    // is finished being written" signal, which is exactly when
+                    // a deferred upload becomes safe to process. Treating it as
+                    // a Create gives the stability gate a guaranteed final
+                    // retry even if the platform coalesces the trailing
+                    // Modify. The gate itself makes repeats cheap: it checks
+                    // freshness first and returns without decoding anything.
+                    notify::EventKind::Access(notify::event::AccessKind::Close(
+                        notify::event::AccessMode::Write,
+                    )) => {
+                        if path.is_file() {
+                            let _ = tx.send(ThumbJob::Create { rel_path: rel_str });
                         }
                     }
                     notify::EventKind::Remove(_) => {

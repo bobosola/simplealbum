@@ -5,6 +5,11 @@ localhost:8443 {
     root * /Users/bobosola/Sites/simplealbum/static
     file_server
 
+    # Versioned CSS/JS names carry a build timestamp, so a long immutable cache
+    # is safe: a changed file always arrives under a new name.
+    @versioned path *.css *.js
+    header @versioned Cache-Control "public, max-age=31536000, immutable"
+
     # API reverse proxy
     reverse_proxy /api/* localhost:18080
 
