@@ -46,7 +46,7 @@ impl Worker {
         //
         // This count is the service's main memory lever: each job can hold
         // a full decoded frame (24 MP decodes to ~72 MB), so workers x that
-        // peak is the upper bound on RSS. `[worker] threads = 0` (default)
+        // peak is the upper bound on RSS. `[worker] threads = 0` (auto)
         // selects the core count clamped to 2..8; operators can pin a lower
         // value to fit a smaller systemd MemoryMax.
         let auto = std::thread::available_parallelism()

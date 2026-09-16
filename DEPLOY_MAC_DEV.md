@@ -96,9 +96,8 @@ db_path = "/Users/bobosola/Sites/simplealbum/album.db"
 # Lower on small machines to reduce peak memory.
 threads = 0
 
-# Change this to your own secure value before deploying.
-# Leaving it empty causes the service to try to write back to this file on
-# first startup, which will fail if the config directory is read-only.
+# Shared secret for admin (cover image) operations. Must not be empty; the
+# service never generates one, so set your own secure value.
 [admin]
 key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
@@ -122,7 +121,7 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/simplealbum/albu
 
 **What this does:**
 - `SIMPLE_ALBUM_LOG=info` — Shows startup messages, file scan progress, and the admin URL.
-- `SIMPLE_ALBUM_CONFIG=...` — Forces the service to read your local test config instead of searching system paths.
+- `SIMPLE_ALBUM_CONFIG=...` — Required. Names the config file to use; the service does not search for one and has no built-in defaults.
 - `./target/release/album` — Runs the compiled binary.
 
 **Expected output:**

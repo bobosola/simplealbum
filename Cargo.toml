@@ -15,12 +15,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 kamadak-exif = "0.6"
 rusqlite = { version = "0.34", features = ["bundled"] }
 toml = "0.8"
-rand = "0.9"
-base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-dirs = "6"
 
 [profile.release]
 opt-level = 3

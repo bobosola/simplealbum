@@ -22,7 +22,9 @@ static/style.css
 static/app.js
 ```
 
-**NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-2026-08-23-1526.js` and `style-2026-08-23-1526.css` . Ensure that all references to these files are updated accordingly.
+**NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-2026-09-16-1253.js` and `style-2026-09-16-1253.css` . Ensure that all references to these files are updated accordingly. Note that `index.html` itself is not versioned, so a browser holding a cached copy will keep requesting the previous asset names until it revalidates.
+
+**Link previews:** `index.html` carries static Open Graph tags that hardcode the production origin `https://www.osola.org.uk/photos/`, and `static/og-image.png` is the shared preview image. Two deployment consequences: the tags only describe the site correctly when it is served from that origin, and the image must be uploaded with the rest of `static/` or crawlers receive a 404 and the previews lose their picture. Crawlers cache previews aggressively — after changing these, re-scrape with the Facebook Sharing Debugger or by appending a throwaway query string.
 
 Build from source (requires [Rust](https://rustup.rs)):
 
@@ -88,7 +90,7 @@ root = "/var/album"
 [state]
 db_path = "/var/lib/album/album.db"
 
-# Thumbnail worker tuning (optional)
+# Thumbnail worker tuning
 [worker]
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 # Lower this on small servers to reduce peak memory (each job can hold a
@@ -96,9 +98,8 @@ db_path = "/var/lib/album/album.db"
 # ~800 MB).
 threads = 0
 
-# Change this to your own secure value before deploying.
-# Leaving it empty causes the service to try to write back to this file on
-# first startup, which will fail if the config directory is read-only.
+# Shared secret for admin (cover image) operations. Must not be empty; the
+# service never generates one, so set your own secure value.
 [admin]
 key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
@@ -270,7 +271,7 @@ bind = "127.0.0.1:8080"
 [album]
 root = "/Users/YOUR_USERNAME/album"
 
-# Thumbnail worker tuning (optional)
+# Thumbnail worker tuning
 [worker]
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 # Lower this on small servers to reduce peak memory (each job can hold a
@@ -282,9 +283,8 @@ threads = 0
 [state]
 db_path = "/Users/YOUR_USERNAME/Library/Application Support/album/db/album.db"
 
-# Change this to your own secure value before deploying.
-# Leaving it empty causes the service to try to write back to this file on
-# first startup, which will fail if the config directory is read-only.
+# Shared secret for admin (cover image) operations. Must not be empty; the
+# service never generates one, so set your own secure value.
 [admin]
 key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
@@ -438,7 +438,7 @@ bind = "127.0.0.1:8080"
 [album]
 root = "C:\\album"
 
-# Thumbnail worker tuning (optional)
+# Thumbnail worker tuning
 [worker]
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 # Lower this on small servers to reduce peak memory (each job can hold a
@@ -450,9 +450,8 @@ threads = 0
 [state]
 db_path = "C:\\Users\\YOURNAME\\AppData\\Roaming\\album\\db\\album.db"
 
-# Change this to your own secure value before deploying.
-# Leaving it empty causes the service to try to write back to this file on
-# first startup, which will fail if the config directory is read-only.
+# Shared secret for admin (cover image) operations. Must not be empty; the
+# service never generates one, so set your own secure value.
 [admin]
 key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```

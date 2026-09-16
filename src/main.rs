@@ -9,6 +9,7 @@ mod worker;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use anyhow::Context;
 use axum::{
     routing::{get, post},
     Router,
@@ -18,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::{
     api::{AppState, get_album, set_cover, health},
-    config::load_or_create,
+    config::Config,
     db::Db,
     worker::{scan_existing, Worker},
 };
@@ -38,15 +39,13 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_env("SIMPLE_ALBUM_LOG"))
         .init();
 
-    let (cfg, cfg_path) = load_or_create()?;
+    let (cfg, cfg_path) = Config::load()?;
     info!("Config loaded from {}", cfg_path.display());
     info!("Album root: {}", cfg.album.root.display());
     info!("API binding: {}", cfg.server.bind);
-    if !cfg.admin.key.is_empty() {
-        info!("Admin key: {}", cfg.admin.key);
-        info!("Admin URL (production): https://your-domain.com/#admin={}", cfg.admin.key);
-        info!("Admin URL (local dev):  https://localhost:8443/#admin={}", cfg.admin.key);
-    }
+    info!("Admin key: {}", cfg.admin.key);
+    info!("Admin URL (production): https://your-domain.com/#admin={}", cfg.admin.key);
+    info!("Admin URL (local dev):  https://localhost:8443/#admin={}", cfg.admin.key);
 
     check_ffmpeg();
 
@@ -70,7 +69,9 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr: SocketAddr = cfg.server.bind.parse()?;
+    let addr: SocketAddr = cfg.server.bind.parse().with_context(|| {
+        format!("`server.bind` `{}` is not a valid socket address", cfg.server.bind)
+    })?;
     info!("API server listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

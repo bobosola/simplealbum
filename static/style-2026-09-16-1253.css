@@ -90,6 +90,44 @@ header h1 {
     background: var(--card-bg);
 }
 
+/* Breadcrumb row: trail on the left, share button pinned right */
+.crumb-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding-right: 1.5rem;
+}
+
+.crumb-bar .breadcrumbs {
+    flex: 1;
+    min-width: 0;
+    padding-right: 0;
+}
+
+.share-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    padding: 0.4rem 0.55rem;
+    cursor: pointer;
+    color: var(--fg);
+    opacity: 0.75;
+    transition: background 0.2s, opacity 0.2s;
+}
+
+.share-btn:hover {
+    background: var(--card-bg);
+    opacity: 1;
+}
+
+.share-btn.hidden {
+    display: none;
+}
+
 .breadcrumbs {
     padding: 0.75rem 1.5rem;
     font-size: 0.875rem;
@@ -269,6 +307,9 @@ body.viewer-open {
 }
 
 .viewer-toolbar button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: rgba(255,255,255,0.15);
     border: none;
     border-radius: 0.375rem;
@@ -396,6 +437,85 @@ body.viewer-open {
     display: none;
 }
 
+/* Share sheet — sits above the viewer overlay (100) */
+#share-sheet {
+    z-index: 250;
+}
+
+.share-sheet-content {
+    max-width: 440px;
+}
+
+.share-targets {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.share-target {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    background: var(--card-bg);
+    color: var(--fg);
+    font-size: 0.875rem;
+    cursor: pointer;
+    text-align: left;
+}
+
+.share-target:hover {
+    background: var(--bg);
+}
+
+.share-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    /* A mid-tone ring so near-black brand dots (X) stay visible in dark mode. */
+    box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.55);
+}
+
+.share-url-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.share-url-row textarea {
+    flex: 1;
+    min-width: 0;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 0.8rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    line-height: 1.35;
+    /* Long folder URLs must stay fully readable rather than scrolling out of
+       sight, so wrap them instead of using a single-line input. */
+    resize: none;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+}
+
+.share-url-row button {
+    padding: 0.5rem 0.9rem;
+    border-radius: 0.375rem;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: white;
+    font-size: 0.875rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
 @media (max-width: 600px) {
     .grid {
         grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -404,5 +524,11 @@ body.viewer-open {
     }
     .card .info .name {
         font-size: 0.8rem;
+    }
+    .crumb-bar {
+        padding-right: 0.75rem;
+    }
+    .crumb-bar .breadcrumbs {
+        padding-left: 0.75rem;
     }
 }

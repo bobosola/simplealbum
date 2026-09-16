@@ -85,6 +85,7 @@ async function loadAlbum(path) {
     currentAlbum = await res.json();
     renderBreadcrumbs();
     renderGrid();
+    document.getElementById('share-folder').classList.remove('hidden');
 }
 
 // Breadcrumbs
@@ -286,10 +287,167 @@ function viewerDownload() {
     a.click();
 }
 
-function viewerCopy() {
+// ---------------------------------------------------------------------------
+// Sharing
+//
+// Two things can be shared:
+//   - a folder  -> the page URL, which the SPA reopens via its #path= hash
+//   - a photo   -> the direct media URL under PHOTO_BASE
+// Both are produced from the same sheet: copy to clipboard, hand off to the
+// OS share sheet, or open a platform's share/intent endpoint.
+// ---------------------------------------------------------------------------
+
+// `color` is the brand dot shown beside the label. `imageOnly` targets are
+// hidden when there is no image to attach (i.e. when sharing a folder).
+const SHARE_PLATFORMS = [
+    { id: 'email',     label: 'Email',     color: '#6b7280' },
+    { id: 'whatsapp',  label: 'WhatsApp',  color: '#25d366' },
+    { id: 'facebook',  label: 'Facebook',  color: '#1877f2' },
+    { id: 'x',         label: 'X',         color: '#111111' },
+    { id: 'telegram',  label: 'Telegram',  color: '#26a5e4' },
+    { id: 'pinterest', label: 'Pinterest', color: '#e60023', imageOnly: true },
+];
+
+let shareTarget = null;
+
+// The site name shown in share text, taken from the visible header heading so
+// it matches what the visitor sees (falls back to the document title).
+function siteName() {
+    const h1 = document.querySelector('header h1');
+    return (h1 && h1.textContent.trim()) || document.title;
+}
+
+function shareText(label) {
+    const site = siteName();
+    return label && label !== site ? `${label} \u2014 ${site}` : site;
+}
+
+// Page URL for a folder. The empty (root) path yields a bare page URL rather
+// than a dangling "#path=".
+function folderPageUrl(path) {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    return path ? `${base}#path=${encodeURIComponent(path)}` : base;
+}
+
+function photoMediaUrl(photo) {
+    return `${window.location.origin}${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
+}
+
+function platformShareUrl(id, target) {
+    const url = encodeURIComponent(target.url);
+    const text = encodeURIComponent(target.text);
+    const both = encodeURIComponent(`${target.text} ${target.url}`);
+    switch (id) {
+        case 'email':
+            return `mailto:?subject=${text}&body=${encodeURIComponent(`${target.text}\n\n${target.url}`)}`;
+        case 'whatsapp':
+            return `https://wa.me/?text=${both}`;
+        case 'facebook':
+            return `https://www.facebook.com/sharer/sharer.php?u=${url}`;
+        case 'x':
+            return `https://x.com/intent/post?url=${url}&text=${text}`;
+        case 'telegram':
+            return `https://t.me/share/url?url=${url}&text=${text}`;
+        case 'pinterest':
+            return `https://www.pinterest.com/pin/create/button/?url=${url}&media=${encodeURIComponent(target.imageUrl || target.url)}&description=${text}`;
+        default:
+            return target.url;
+    }
+}
+
+function openShareSheet(target) {
+    shareTarget = target;
+    document.getElementById('share-url').value = target.url;
+    document.getElementById('share-subtitle').textContent = target.label || '';
+
+    const container = document.getElementById('share-targets');
+    container.innerHTML = '';
+
+    // Native OS share sheet first, when the browser offers one (mostly mobile).
+    if (navigator.share) {
+        const native = document.createElement('button');
+        native.type = 'button';
+        native.className = 'share-target';
+        native.innerHTML = '<span class="share-dot" style="background:var(--accent)"></span>Share\u2026';
+        native.addEventListener('click', () => {
+            // Fires the user's OS sheet; failures (e.g. user cancelled) are not
+            // worth surfacing, since the sheet is dismissed either way.
+            navigator.share({ title: siteName(), text: target.text, url: target.url }).catch(() => {});
+            closeShareSheet();
+        });
+        container.appendChild(native);
+    }
+
+    for (const platform of SHARE_PLATFORMS) {
+        if (platform.imageOnly && !target.imageUrl) continue;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'share-target';
+        btn.innerHTML = `<span class="share-dot" style="background:${platform.color}"></span>${escapeHtml(platform.label)}`;
+        btn.addEventListener('click', () => {
+            const shareUrl = platformShareUrl(platform.id, target);
+            // mailto must not go through window.open, or some browsers leave an
+            // empty tab behind.
+            if (platform.id === 'email') {
+                window.location.href = shareUrl;
+            } else {
+                window.open(shareUrl, '_blank', 'noopener,noreferrer');
+            }
+            closeShareSheet();
+        });
+        container.appendChild(btn);
+    }
+
+    document.getElementById('share-sheet').classList.remove('hidden');
+}
+
+function closeShareSheet() {
+    document.getElementById('share-sheet').classList.add('hidden');
+    shareTarget = null;
+}
+
+// Kept open on purpose so the URL stays visible for manual copying if the
+// clipboard is unavailable (e.g. a non-HTTPS origin).
+async function copyShareUrl() {
+    if (!shareTarget) return;
+    const url = shareTarget.url;
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Link copied');
+    } catch (err) {
+        const input = document.getElementById('share-url');
+        input.focus();
+        input.select();
+        let ok = false;
+        try {
+            ok = document.execCommand('copy');
+        } catch (e) {
+            ok = false;
+        }
+        showToast(ok ? 'Link copied' : 'Copy failed \u2014 select the link and copy manually');
+    }
+}
+
+function shareFolder() {
+    if (!currentAlbum) return;
+    const crumbs = currentAlbum.breadcrumbs || [];
+    const label = currentPath && crumbs.length ? crumbs[crumbs.length - 1].name : '';
+    openShareSheet({
+        url: folderPageUrl(currentPath),
+        text: shareText(label),
+        label: label || siteName(),
+    });
+}
+
+function sharePhoto() {
     const photo = currentAlbum.photos[currentViewerIndex];
-    const url = `${window.location.origin}${PHOTO_BASE}/${encodePath(currentPath)}/${encodeURIComponent(photo.name)}`;
-    navigator.clipboard.writeText(url).then(() => showToast('Link copied'));
+    const url = photoMediaUrl(photo);
+    openShareSheet({
+        url,
+        imageUrl: url,
+        text: shareText(photo.name),
+        label: photo.name,
+    });
 }
 
 // Cover modal
@@ -403,6 +561,14 @@ window.addEventListener('popstate', e => {
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
+    // While the share sheet is open it owns the keyboard: Escape closes it, and
+    // viewer navigation must not fire underneath it.
+    const sheet = document.getElementById('share-sheet');
+    if (!sheet.classList.contains('hidden')) {
+        if (e.key === 'Escape') closeShareSheet();
+        return;
+    }
+
     const viewer = document.getElementById('viewer');
     if (viewer.classList.contains('hidden')) return;
     if (e.key === 'ArrowLeft') viewerPrev();
@@ -447,7 +613,14 @@ document.getElementById('viewer-up').addEventListener('click', () => {
 document.getElementById('viewer-prev').addEventListener('click', viewerPrev);
 document.getElementById('viewer-next').addEventListener('click', viewerNext);
 document.getElementById('viewer-download').addEventListener('click', viewerDownload);
-document.getElementById('viewer-copy').addEventListener('click', viewerCopy);
+document.getElementById('viewer-share').addEventListener('click', sharePhoto);
+document.getElementById('share-folder').addEventListener('click', shareFolder);
+document.getElementById('share-copy').addEventListener('click', copyShareUrl);
+document.getElementById('share-close').addEventListener('click', closeShareSheet);
+document.getElementById('share-sheet').addEventListener('click', e => {
+    // Backdrop click dismisses; clicks inside the panel do not.
+    if (e.target === e.currentTarget) closeShareSheet();
+});
 document.getElementById('cover-cancel').addEventListener('click', closeCoverModal);
 document.getElementById('cover-confirm').addEventListener('click', confirmCover);
 

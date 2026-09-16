@@ -1,23 +1,33 @@
-# API bind address and port
-[server]
-bind = "127.0.0.1:8080"
+# Local development config for macOS + Caddy.
+#
+# Run with this file explicitly named; the service has no default config path:
+#   SIMPLE_ALBUM_LOG=info \
+#   SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/simplealbum/album.local.toml \
+#   ./target/release/album
+#
+# Every setting below is required. The service never generates or rewrites this
+# file, and it validates `album.root` and `admin.key` before starting.
 
-# Root of the photo tree
+# API bind address and port.
+# Must match the reverse_proxy target in Caddyfile.local (localhost:18080).
+[server]
+bind = "127.0.0.1:18080"
+
+# Root of the photo tree. Must exist.
 [album]
 root = "/Users/bobosola/photos"
 
-# SQLite database location
+# SQLite database location. Parent directories are created if missing.
 [state]
 db_path = "/Users/bobosola/Sites/simplealbum/album.db"
 
-# Thumbnail worker tuning
-[worker]
+# Thumbnail worker tuning.
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 # Lower on small machines to reduce peak memory.
+[worker]
 threads = 0
 
-# Change this to your own secure value before deploying.
-# Leaving it empty causes the service to try to write back to this file on
-# first startup, which will fail if the config directory is read-only.
+# Shared secret for admin (cover image) operations. Must not be empty; the
+# service never generates one, so replace this with your own secure value.
 [admin]
 key = "REPLACE-WITH-YOUR-OWN-KEY"

@@ -4,7 +4,55 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Photo Album</title>
-    <link rel="stylesheet" href="style-2026-08-23-1526.css">
+
+    <!--
+      Open Graph / Twitter Card tags — static link-preview metadata.
+
+      These are read by link-preview crawlers (Facebook, WhatsApp, iMessage,
+      Slack, Signal, Telegram, LinkedIn, X, Discord...) which fetch this HTML
+      and DO NOT execute JavaScript. Everything they can show must therefore be
+      present in this static file.
+
+      Two consequences of that, both inherent to this app:
+        1. Absolute URLs are required by the spec, so the production origin is
+           hardcoded below. These tags are only meaningful when this page is
+           served from that origin.
+        2. The album's route lives in the URL *fragment* ("#path=...").
+           Fragments are never sent to the server, so every shared folder link
+           returns this same HTML and therefore the same preview. Per-folder
+           previews would need real paths plus server-side tag injection.
+
+      og:url is deliberately OMITTED. It is defined by the spec as the object's
+      "permanent ID", and Facebook documents that "all links that specify the
+      same canonical URL are treated as the same resource" and are de-duplicated
+      "when displaying them on any surface". Pointing it at the album root would
+      declare every folder link to be that one object, which is false - each
+      link opens a different folder - and risks the preview being collapsed onto
+      the root. Without og:url the page's own URL is the canonical URL, so each
+      shared folder keeps its own identity. WhatsApp lists og:url among its
+      preferred tags but documents that it relaxes requirements and falls back
+      to the other mark-ups, which are all present below.
+
+      If the site moves, update og:image and twitter:image together.
+    -->
+    <meta name="description" content="Browse our photo and video collection by folder.">
+
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Bob &amp; Karen's Photo Album">
+    <meta property="og:title" content="Bob &amp; Karen's Photo Album">
+    <meta property="og:description" content="Browse our photo and video collection by folder.">
+    <meta property="og:image" content="https://www.osola.org.uk/photos/og-image.png">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Bob &amp; Karen's Photo Album">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Bob &amp; Karen's Photo Album">
+    <meta name="twitter:description" content="Browse our photo and video collection by folder.">
+    <meta name="twitter:image" content="https://www.osola.org.uk/photos/og-image.png">
+
+    <link rel="stylesheet" href="style-2026-09-16-1253.css">
 </head>
 <body>
     <header>
@@ -18,7 +66,19 @@
         </div>
     </header>
 
-    <nav id="breadcrumbs" class="breadcrumbs"></nav>
+    <div class="crumb-bar">
+        <nav id="breadcrumbs" class="breadcrumbs"></nav>
+        <button id="share-folder" class="share-btn hidden" title="Share this folder" aria-label="Share this folder">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="18" cy="5" r="3"/>
+                <circle cx="6" cy="12" r="3"/>
+                <circle cx="18" cy="19" r="3"/>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+            </svg>
+        </button>
+    </div>
 
     <main id="grid" class="grid"></main>
 
@@ -28,7 +88,16 @@
             <button id="viewer-prev" title="Previous">&#9664;</button>
             <button id="viewer-next" title="Next">&#9654;</button>
             <button id="viewer-download" title="Download">&#11015;</button>
-            <button id="viewer-copy" title="Copy link">&#128203;</button>
+            <button id="viewer-share" title="Share" aria-label="Share">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="18" cy="5" r="3"/>
+                    <circle cx="6" cy="12" r="3"/>
+                    <circle cx="18" cy="19" r="3"/>
+                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                    <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                </svg>
+            </button>
             <button id="viewer-close" title="Close">&#10005;</button>
         </div>
         <div class="viewer-content" id="viewer-content"></div>
@@ -46,8 +115,23 @@
         </div>
     </div>
 
+    <div id="share-sheet" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="share-heading">
+        <div class="modal-content share-sheet-content">
+            <h3 id="share-heading">Share</h3>
+            <p id="share-subtitle"></p>
+            <div id="share-targets" class="share-targets"></div>
+            <div class="share-url-row">
+                <textarea id="share-url" rows="2" readonly aria-label="Shareable link"></textarea>
+                <button id="share-copy" type="button">Copy</button>
+            </div>
+            <div class="modal-actions">
+                <button id="share-close" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
     <div id="toast" class="toast hidden"></div>
 
-    <script src="app-2026-08-23-1526.js"></script>
+    <script src="app-2026-09-16-1253.js"></script>
 </body>
 </html>

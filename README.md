@@ -128,14 +128,14 @@ The binary appears at `./target/release/album`.
 
 ### Create a config file
 
-On first startup, Simple Album creates a default config if none exists. You may need to create one manually on your live server depending on write perms:
+Create `album.toml` yourself — the service never generates one, never writes back to it, and ships with no built-in paths or settings. Every setting below is required:
 
 ```toml
 # API bind address and port
 [server]
 bind = "127.0.0.1:8080"
 
-# Root of the photo tree
+# Root of the photo tree. Must exist at startup.
 [album]
 root = "/path/to/your/photos"
 
@@ -143,29 +143,22 @@ root = "/path/to/your/photos"
 [state]
 db_path = "/path/to/album.db"
 
-# Thumbnail worker tuning (optional)
+# Thumbnail worker tuning
 [worker]
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 threads = 0
 
-# Change this to your own secure value before deploying.
-# Leaving it empty causes the service to try to write back to this file on
-# first startup, which will fail if the config directory is read-only.
+# Shared secret for admin (cover image) operations. Must not be empty; the
+# service never generates one, so set your own secure value.
 [admin]
 key = "REPLACE-WITH-YOUR-OWN-KEY"
 ```
 
-Set `admin.key` to a secure value before starting — the service reads it from the config and does not write back to the file.
+Set `admin.key` to a secure value before starting.
 
 ### Run
 
-For local testing and debugging, set the logging level environment variable and run the app in one command thus:
-
-```bash
-SIMPLE_ALBUM_LOG=info ./target/release/album
-```
-
-Or optionally point to a specific config file:
+`SIMPLE_ALBUM_CONFIG` is required — it names the config file to use. There is no search path and no default config, so the service exits with an explanatory error if it is unset:
 
 ```bash
 SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/album
@@ -173,7 +166,7 @@ SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/a
 
 ### View in browser
 
-The backend listens on `127.0.0.1:8080` by default. For a complete setup with TLS and static file serving, place a reverse proxy in front. See the Architecture section below.
+The backend listens on the address configured in `server.bind` of `album.toml` (e.g. `127.0.0.1:8080`). For a complete setup with TLS and static file serving, place a reverse proxy in front. See the Architecture section below.
 
 ### Simple Admin mode for cover images: 
 
@@ -262,11 +255,9 @@ When running as a system service (see [`DEPLOY.md`](DEPLOY.md)) you can view the
 | Environment Variable | Purpose |
 |---|---|
 | `SIMPLE_ALBUM_LOG` | Logging level (`info`, `warn`, `debug`, `trace`) |
-| `SIMPLE_ALBUM_CONFIG` | Path to config TOML file (overrides default search) |
+| `SIMPLE_ALBUM_CONFIG` | **Required.** Path to the config TOML file. |
 
-Config search order (if `SIMPLE_ALBUM_CONFIG` is not set):
-1. `dirs::config_dir()/album/album.toml` (platform-specific)
-2. `/etc/album/album.toml` (Linux fallback)
+`SIMPLE_ALBUM_CONFIG` is the only way the config file is located. The service does not create a config file, does not search for one, and does not fall back to built-in paths or settings. If the variable is unset, empty, or points at a missing file, startup fails with an error explaining what to set.
 
 ---
 

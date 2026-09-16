@@ -1,129 +1,156 @@
-use std::path::PathBuf;
-use std::io::Write;
-use rand::{rngs::OsRng, TryRngCore};
-use base64::prelude::*;
-use serde::{Deserialize, Serialize};
-use tracing::info;
+//! Configuration loading.
+//!
+//! There are no defaults, no fallbacks, and no file generation. The process
+//! reads exactly one file — the one named by the `SIMPLE_ALBUM_CONFIG`
+//! environment variable — and refuses to start if that variable is unset or
+//! if the file is missing, malformed, or incomplete. The application never
+//! creates or rewrites its own configuration.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use std::path::PathBuf;
+
+use anyhow::{bail, Context, Result};
+use serde::Deserialize;
+
+/// Environment variable naming the config file. This is the only way the
+/// config file is ever located.
+pub const CONFIG_ENV_VAR: &str = "SIMPLE_ALBUM_CONFIG";
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub album: AlbumConfig,
     pub state: StateConfig,
-    #[serde(default)]
     pub worker: WorkerConfig,
     pub admin: AdminConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// HTTP listener settings.
+#[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
+    /// Socket address to bind, e.g. `"127.0.0.1:8080"`.
     pub bind: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The photo tree being served.
+#[derive(Debug, Clone, Deserialize)]
 pub struct AlbumConfig {
+    /// Absolute path to the root of the photo tree. Must exist at startup.
     pub root: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Persistent state locations.
+#[derive(Debug, Clone, Deserialize)]
 pub struct StateConfig {
+    /// SQLite database file. Missing parent directories are created.
     pub db_path: PathBuf,
 }
 
 /// Background thumbnail worker tuning.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct WorkerConfig {
-    /// Number of concurrent thumbnail generation jobs. 0 (default) means
-    /// auto: the CPU core count clamped to 2..8.
+    /// Number of concurrent thumbnail jobs. `0` selects auto: the CPU core
+    /// count clamped to `2..=8`. Explicit values are clamped to `1..=32`.
     ///
     /// This is the main memory lever: each job decodes a full-resolution
-    /// image into RAM (a 24 MP photo decodes to ~72 MB). Operators on small
-    /// servers should set this lower (e.g. 2) and keep systemd MemoryMax
-    /// modest; operators on bigger machines can leave it auto.
-    #[serde(default)]
+    /// image into RAM (a 24 MP photo decodes to ~72 MB), so the peak is
+    /// roughly `threads` x that. Set a low value on small machines and keep
+    /// systemd `MemoryMax` modest accordingly.
     pub threads: u32,
 }
 
-impl Default for WorkerConfig {
-    fn default() -> Self {
-        WorkerConfig { threads: 0 }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Admin authentication.
+#[derive(Debug, Clone, Deserialize)]
 pub struct AdminConfig {
+    /// Shared secret required by mutating API endpoints. Must not be empty;
+    /// the application never generates one for you.
     pub key: String,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let album_root = home.join("album");
-        let data_dir = dirs::data_dir().unwrap_or_else(|| home.join(".local/share"));
-        let db_path = data_dir.join("album/album.db");
-        Config {
-            server: ServerConfig { bind: "127.0.0.1:8080".to_string() },
-            album: AlbumConfig { root: album_root },
-            state: StateConfig { db_path },
-            worker: WorkerConfig::default(),
-            admin: AdminConfig { key: String::new() },
+impl Config {
+    /// Read and validate the config file named by `SIMPLE_ALBUM_CONFIG`.
+    ///
+    /// Returns the parsed config and the path it came from, so the caller can
+    /// log exactly which file is in effect.
+    pub fn load() -> Result<(Config, PathBuf)> {
+        let path = config_path()?;
+
+        let contents = std::fs::read_to_string(&path).with_context(|| {
+            format!(
+                "cannot read config file `{}` (from {})",
+                path.display(),
+                CONFIG_ENV_VAR
+            )
+        })?;
+
+        let config: Config = toml::from_str(&contents)
+            .with_context(|| format!("invalid config file `{}`", path.display()))?;
+
+        config.validate()?;
+        Ok((config, path))
+    }
+
+    /// Reject configurations that would otherwise fail confusingly later,
+    /// such as a photo root that does not exist.
+    fn validate(&self) -> Result<()> {
+        if self.album.root.as_os_str().is_empty() {
+            bail!("`album.root` is empty");
         }
+        if !self.album.root.is_dir() {
+            bail!(
+                "`album.root` `{}` does not exist or is not a directory",
+                self.album.root.display()
+            );
+        }
+        if self.state.db_path.as_os_str().is_empty() {
+            bail!("`state.db_path` is empty");
+        }
+        if self.server.bind.trim().is_empty() {
+            bail!("`server.bind` is empty");
+        }
+        if self.admin.key.trim().is_empty() {
+            bail!(
+                "`admin.key` is empty. Set a secure value in your album.toml \
+                 (see README for how to generate one)"
+            );
+        }
+        Ok(())
     }
 }
 
-pub fn load_or_create() -> anyhow::Result<(Config, PathBuf)> {
-    let path = find_config_path()?;
-    let config = if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        let mut cfg: Config = toml::from_str(&content)?;
-        if cfg.admin.key.is_empty() {
-            cfg.admin.key = generate_key();
-            save_config(&path, &cfg)?;
-            info!("First run detected. Admin key generated and saved to {}", path.display());
-            info!("Admin URL: https://album.example.com/#admin={}", cfg.admin.key);
+/// Actionable hint appended to "path not usable" errors.
+fn usage_hint() -> String {
+    format!(
+        "Point it at your album.toml, for example:\n    {}=/etc/album/album.toml album",
+        CONFIG_ENV_VAR
+    )
+}
+
+/// Resolve the config path from the environment.
+///
+/// The environment variable must be set, non-empty, and point at an existing
+/// regular file. There are deliberately no fallback locations.
+fn config_path() -> Result<PathBuf> {
+    let raw = match std::env::var(CONFIG_ENV_VAR) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => {
+            bail!("{} is not set. {}", CONFIG_ENV_VAR, usage_hint())
         }
-        cfg
-    } else {
-        let mut cfg = Config::default();
-        cfg.admin.key = generate_key();
-        std::fs::create_dir_all(path.parent().unwrap_or(PathBuf::from(".").as_path()))?;
-        save_config(&path, &cfg)?;
-        info!("First run detected. Created config at {}", path.display());
-        info!("Admin URL: https://album.example.com/#admin={}", cfg.admin.key);
-        cfg
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("{} is set but is not valid UTF-8", CONFIG_ENV_VAR)
+        }
     };
-    Ok((config, path))
-}
 
-fn find_config_path() -> anyhow::Result<PathBuf> {
-    if let Ok(env_path) = std::env::var("SIMPLE_ALBUM_CONFIG") {
-        return Ok(PathBuf::from(env_path));
+    if raw.trim().is_empty() {
+        bail!("{} is set but empty. {}", CONFIG_ENV_VAR, usage_hint());
     }
-    if let Some(config_dir) = dirs::config_dir() {
-        let p = config_dir.join("album/album.toml");
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    let etc = PathBuf::from("/etc/album/album.toml");
-    if etc.exists() {
-        return Ok(etc);
-    }
-    if let Some(config_dir) = dirs::config_dir() {
-        return Ok(config_dir.join("album/album.toml"));
-    }
-    Ok(PathBuf::from("album.toml"))
-}
 
-fn save_config(path: &std::path::Path, config: &Config) -> anyhow::Result<()> {
-    let content = toml::to_string_pretty(config)?;
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(content.as_bytes())?;
-    Ok(())
-}
-
-fn generate_key() -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.try_fill_bytes(&mut bytes).expect("RNG failure");
-    BASE64_URL_SAFE_NO_PAD.encode(&bytes)
+    let path = PathBuf::from(raw);
+    if !path.is_file() {
+        bail!(
+            "config file `{}` (from {}) does not exist or is not a regular file",
+            path.display(),
+            CONFIG_ENV_VAR
+        );
+    }
+    Ok(path)
 }

@@ -93,11 +93,11 @@ Stores:
 
 The Rust service is configured via a TOML file. No command-line arguments are required.
 
-### Config File Locations (searched in order)
+### Config File Location
 
-1. Path from environment variable: `SIMPLE_ALBUM_CONFIG=/path/to/album.toml`
-2. `/etc/album/album.toml` (system-wide, for systemd deployments)
-3. `~/.config/album/album.toml` (user-local, for manual runs)
+The config file path is taken from the `SIMPLE_ALBUM_CONFIG` environment variable. This is the only way it is located — there is no search path, no fallback to platform config directories, and no `/etc` default. If the variable is unset, empty, or names a file that does not exist, the service refuses to start.
+
+The service never creates the config file and never writes back to it, so the config directory may be read-only at runtime.
 
 ### Example `album.toml`
 
@@ -122,23 +122,24 @@ threads = 0
 
 [admin]
 # Pre-shared key for cover selection and other write operations.
-# If left empty or omitted, the service generates one on first startup
-# and writes it back into this file.
+# Required and must not be empty. The service never generates one.
 key = ""
 ```
 
-### First-Run Admin Key Generation
+Every key shown above is required. A missing key, a malformed file, an empty
+`admin.key`, or an `album.root` that does not exist all cause startup to fail
+with a message naming the problem — there are no built-in defaults to fall back
+on.
 
-On first startup, if `[admin] key` is empty or missing:
+### Admin Key
 
-1. The service generates a cryptographically random 32-byte string, base64url-encoded (e.g. `xT9vK2mNqLpR5sW8yZ3aB7cE1fG4hJ6k`).
-2. Writes the key back into `album.toml` under `[admin] key`.
-3. Logs it prominently:
-   ```
-   [INFO] First run detected. Admin key generated and saved to /etc/album/album.toml
-   [INFO] Admin URL: https://album.example.com/#admin=xT9vK2mNqLpR5sW8yZ3aB7cE1fG4hJ6k
-   ```
-4. Thereafter, an empty string is never accepted as a valid key.
+The `[admin] key` value is chosen by the operator and set in `album.toml` before
+first startup. The service does not generate a key and never needs write access
+to the config directory at runtime. Generate one with:
+
+```bash
+openssl rand -base64 32
+```
 
 The admin bookmarks this URL. On page load, the frontend JavaScript reads `window.location.hash`, stores the key in `localStorage` as `album_admin_key`, and immediately strips it from the URL via `history.replaceState()`. The key is sent as the `X-Admin-Key` header on every write request.
 
@@ -212,7 +213,7 @@ With a large collection, four measures are critical:
 
 ## 6. Rust Service — API Specification
 
-Base URL: `http://<bind_address>` (default `127.0.0.1:8080`; configurable in `album.toml`). Not exposed externally — Caddy reverse-proxies `/api/*`.
+Base URL: `http://<bind_address>` (e.g. `127.0.0.1:8080`, set by `server.bind` in `album.toml`). Not exposed externally — Caddy reverse-proxies `/api/*`.
 
 ### Endpoints
 
@@ -317,13 +318,14 @@ For systemd / monitoring health checks.
 - If a thumbnail does not yet exist (background worker backlog), a CSS placeholder is shown: a solid muted background colour with a subtle image icon. The full-size image is never used as a fallback — this would crush performance on large folders.
 - Clicking a folder navigates deeper. Clicking a thumbnail opens the Photo/Video Viewer.
 - Breadcrumb trail at the top (`Home / 1980-89 / 1981`).
+- A share button sits at the right-hand end of the breadcrumb row, revealed once a folder has loaded.
 
 #### Admin Mode & Cover Selection
 
 The gallery is read-only for public visitors. Write operations (setting folder covers) require admin mode.
 
 **Entering admin mode:**
-- Visit `https://album.example.com/#admin=<key>` (the URL from first-run logs).
+- Visit `https://album.example.com/#admin=<key>` (the admin URL printed in the startup logs).
 - The frontend reads the key from `window.location.hash`, stores it in `localStorage` as `album_admin_key`, and immediately removes it from the URL via `history.replaceState()`.
 - A small indicator (e.g. a padlock icon) appears in the header to confirm admin mode is active.
 
@@ -354,7 +356,70 @@ The user checks whichever folders should use this image as their cover, then con
   - **▲ Up**: return to the parent album grid.
 - **Actions**:
   - **Download**: direct link to `/photoalbum/<path>/<file>`.
-  - **Copy Link**: copies the direct media URL to clipboard.
+  - **Share**: opens the share sheet for the current item (see Sharing below).
+
+#### Sharing
+
+Both the folder grid and the Photo/Video Viewer have a share button that opens the
+same share sheet. The sheet shows the link itself in a wrapping read-only field, a
+copy button, and one button per platform.
+
+The shared URL depends on context:
+
+| Context | Shared URL | Rationale |
+|---|---|---|
+| Folder view | `<origin>/#path=<url-encoded folder>` | The SPA reopens that folder through its hash route, so recipients land in the album UI. The album root shares a bare page URL. |
+| Photo / video | `<origin>/photoalbum/<path>/<file>` | The direct media URL (identical to the old "Copy Link" behaviour), so recipients can view or download the file directly. |
+
+Targets are ordinary share/intent URLs opened in a new tab with `noopener,noreferrer`:
+Email (`mailto:`), WhatsApp, Facebook, X, Telegram, and Pinterest. Pinterest is
+offered only when an image URL exists — i.e. from the viewer, never from a folder.
+When `navigator.share` is available (most mobile browsers) a native "Share…" entry
+is listed first.
+
+Clipboard writes use `navigator.clipboard`, falling back to field selection plus
+`document.execCommand('copy')` where the Clipboard API is unavailable (for example
+a plain-HTTP origin). The sheet stays open after copying so the link remains
+visible and manually selectable.
+
+**Known limitation:** a photo's share link opens the raw media file, not the viewer
+scrolled to that photo. The hash route encodes only a folder, so there is no URL
+that deep-links into the viewer for a specific item.
+
+#### Link Previews (Open Graph)
+
+Static Open Graph and Twitter Card tags live in the `<head>` of `index.html`, with
+`static/og-image.png` (1200x630) as the preview image. Preview crawlers fetch the
+HTML and **do not execute JavaScript**, so these tags are the only thing that can
+describe a link when it is pasted into Facebook, WhatsApp, Slack, iMessage,
+Telegram, Signal, Discord, or LinkedIn.
+
+The tags are necessarily static, which has consequences worth knowing:
+
+1. `og:image` and `twitter:image` must be absolute, so the production origin
+   (`https://www.osola.org.uk/photos/`) is hardcoded. If the site moves, these
+   must be updated. When served from any other origin they are inert.
+2. The album's route lives in the URL **fragment** (`#path=...`), and fragments are
+   never transmitted to the server (this is the same property that keeps the admin
+   key out of access logs — see Admin Key Protection). Every shared folder link
+   therefore produces an identical request and an identical preview card.
+3. `og:url` is deliberately **omitted**. The spec defines it as the object's
+   "permanent ID", and Facebook documents that all links sharing one canonical URL
+   "are treated as the same resource" and de-duplicated "when displaying them on
+   any surface". Setting it to the album root would declare every folder link to be
+   that single object, which is false, and risks previews collapsing onto the root.
+   Omitting it makes each page's own URL its canonical URL, so every shared folder
+   link keeps a distinct identity. WhatsApp lists `og:url` among its preferred tags
+   but documents that it relaxes requirements and falls back to the other mark-ups,
+   all of which are present.
+
+Consequently the click destination is always the URL that was posted, fragment
+included, so a shared folder link opens that folder. Only the preview card's image
+and text are generic.
+
+Per-folder previews would require abandoning hash routing for real paths plus
+server-side tag injection. Direct photo links need none of this: their URL *is* an
+image, so crawlers render the photo itself with no metadata involved.
 
 ### Colour Scheme (Fresh, Modern)
 The frontend supports both light and dark modes via CSS custom properties and the `prefers-color-scheme` media query. A manual toggle is also provided in the UI header.
@@ -618,7 +683,8 @@ The following features are **not** part of the initial scope, but the architectu
 - [ ] Thumbnails are generated automatically and stored in per-folder `thumbs/` directories.
 - [ ] Album grid shows folders with a representative thumbnail and counts.
 - [ ] Admin can set/change the cover image for any folder via a pre-shared key; public visitors cannot.
-- [ ] Photo viewer scales to viewport, supports Prev/Next/Up navigation, Download, and Copy Link.
+- [ ] Photo viewer scales to viewport, supports Prev/Next/Up navigation, Download, and Share.
+- [ ] Folder and photo views both offer a share sheet with copy-to-clipboard and social platform targets.
 - [ ] Zero frontend build step. Zero database server setup.
 - [ ] Folders and photos are displayed in filename order, giving the user control via file naming.
 - [ ] Dark mode is available and respects the user's system preference, with a manual toggle override.
