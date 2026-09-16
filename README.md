@@ -185,7 +185,7 @@ Set `admin.key` to a secure value before starting.
 
 ### Run
 
-`SIMPLE_ALBUM_CONFIG` is required — it names the config file to use. There is no search path and no default config, so the service exits with an explanatory error if it is unset:
+The env var `SIMPLE_ALBUM_CONFIG` is required — it names the config file to use. There is no search path and no default config, so the service exits with an explanatory error if it is unset:
 
 ```bash
 SIMPLE_ALBUM_LOG=info SIMPLE_ALBUM_CONFIG=/path/to/album.toml ./target/release/album
