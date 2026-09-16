@@ -18,7 +18,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
 use crate::{
-    api::{AppState, get_album, set_cover, health},
+    api::{AppState, get_album, health, set_cover, share_page},
     config::Config,
     db::Db,
     worker::{scan_existing, Worker},
@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/album", get(get_album))
         .route("/api/cover", post(set_cover))
         .route("/api/health", get(health))
+        .route("/api/share", get(share_page))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

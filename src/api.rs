@@ -1,7 +1,7 @@
 use axum::{
     extract::{Query, State},
     http::StatusCode,
-    response::Json,
+    response::{Html, Json},
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -23,6 +23,231 @@ pub struct AppState {
 pub struct AlbumQuery {
     #[serde(default)]
     pub path: String,
+}
+
+#[derive(Deserialize)]
+pub struct ShareQuery {
+    #[serde(default)]
+    pub path: String,
+    /// Optional bare filename inside `path`. Absent means "share this folder".
+    #[serde(default)]
+    pub photo: String,
+}
+
+/// Escape text for use in HTML text or a double-quoted attribute.
+///
+/// Folder and file names come from the filesystem and are echoed back into the
+/// generated page, so they must never be interpolated raw.
+fn escape_html(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for c in input.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Percent-encode one value the way JavaScript's `encodeURIComponent` does:
+/// every byte outside the unreserved set is escaped. Keeps share URLs
+/// byte-identical to what the frontend would have produced itself.
+fn encode_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    out
+}
+
+/// Percent-encode a `/`-separated relative path, leaving the separators alone.
+fn encode_rel_path(rel: &str) -> String {
+    rel.split('/').map(encode_component).collect::<Vec<_>>().join("/")
+}
+
+/// Scheme + host + port of a base URL, i.e. everything before the path.
+fn origin_of(url: &str) -> &str {
+    let after_scheme = url.find("//").map(|i| i + 2).unwrap_or(0);
+    match url[after_scheme..].find('/') {
+        Some(i) => &url[..after_scheme + i],
+        None => url,
+    }
+}
+
+/// Build the shareable page that link-preview crawlers read.
+///
+/// Preview crawlers (WhatsApp, Facebook, Slack, Telegram, iMessage...) read
+/// Open Graph tags from an HTML `<head>` and never execute JavaScript. The SPA's
+/// own URLs put the album path in the *fragment* (`#path=...`), which browsers
+/// never send to the server, so a static `index.html` cannot describe what was
+/// shared and every link previews identically.
+///
+/// This endpoint takes the same information as a *query string*, which does
+/// reach the server, so each shared folder or photo can carry its own title and
+/// image. It returns a tiny HTML page for the crawler and immediately forwards
+/// a human visitor on to the real destination.
+///
+/// Query strings, not path segments, are used deliberately: photos and folders
+/// may contain spaces, apostrophes and other characters that are awkward in a
+/// path, and `util::validate_path` already guards the traversal cases.
+pub async fn share_page(
+    Query(query): Query<ShareQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Html<String>, StatusCode> {
+    let cfg = &state.config;
+    let root = &cfg.album.root;
+
+    let rel = util::validate_path(&query.path).ok_or(StatusCode::BAD_REQUEST)?;
+
+    // `photo`, when present, must be a bare filename: no separators, so it
+    // cannot escape the folder it is joined to.
+    let photo = query.photo.trim();
+    if !photo.is_empty()
+        && (photo.contains('/') || photo.contains('\\') || util::validate_path(photo).is_none())
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Site root with exactly one trailing slash, e.g. "https://host/photos/".
+    let site = format!("{}/", cfg.server.public_url.trim_end_matches('/'));
+    // Photos are served from the origin root (`/photoalbum/...`), independent of
+    // any path prefix the site itself sits under.
+    let origin = origin_of(&site);
+    let media = |rel_path: &str| format!("{}/photoalbum/{}", origin, encode_rel_path(rel_path));
+
+    let (title, description, image_url, redirect) = if photo.is_empty() {
+        // ---- Folder ----
+        let abs = util::resolve_album_path(root, &rel).ok_or(StatusCode::NOT_FOUND)?;
+        if !abs.is_dir() {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let name = rel.rsplit('/').next().filter(|s| !s.is_empty());
+        let title = match name {
+            Some(n) => n.to_string(),
+            None => cfg.server.site_name.clone(),
+        };
+        let description = if rel.is_empty() {
+            "Browse our photo and video collection by folder.".to_string()
+        } else {
+            format!("Photos and videos in {}", rel.replace('/', " / "))
+        };
+        // Reuses the same cover resolution as the grid: an admin-chosen cover
+        // first, then the first thumbnail found in the folder or below it.
+        let cover = state
+            .db
+            .get_cover(&rel)
+            .filter(|full| root.join(full).exists())
+            .and_then(|full| compute_cover_thumb(&rel, &full))
+            .or_else(|| find_first_thumb_recursive(root, &rel));
+        let image = cover
+            .map(|c| media(&if rel.is_empty() { c.clone() } else { format!("{}/{}", rel, c) }));
+        (
+            title,
+            description,
+            image,
+            format!("{}#path={}", site, encode_component(&rel)),
+        )
+    } else {
+        // ---- Single photo or video ----
+        // Resolve the media path itself: `rel` is only the folder it lives in.
+        let photo_rel = if rel.is_empty() {
+            photo.to_string()
+        } else {
+            format!("{}/{}", rel, photo)
+        };
+        let photo_abs =
+            util::resolve_album_path(root, &photo_rel).ok_or(StatusCode::NOT_FOUND)?;
+        if !photo_abs.is_file() || !util::is_media_file(photo) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let thumb_rel = if rel.is_empty() {
+            format!("thumbs/{}", util::thumb_name(photo))
+        } else {
+            format!("{}/thumbs/{}", rel, util::thumb_name(photo))
+        };
+        // Prefer the thumbnail: originals run to several MB, well past the
+        // 600KB that WhatsApp will accept for a preview image. Fall back to the
+        // original when the worker has not produced a thumbnail yet.
+        let image = if root.join(&thumb_rel).is_file() {
+            Some(media(&thumb_rel))
+        } else {
+            Some(media(&photo_rel))
+        };
+        let description = if rel.is_empty() {
+            cfg.server.site_name.clone()
+        } else {
+            format!("From {}", rel.replace('/', " / "))
+        };
+        (
+            photo.to_string(),
+            description,
+            image,
+            media(&photo_rel),
+        )
+    };
+
+    let title_esc = escape_html(&title);
+    let site_esc = escape_html(&cfg.server.site_name);
+    let desc_esc = escape_html(&description);
+    let redirect_esc = escape_html(&redirect);
+
+    // Image tags are omitted entirely when no image is available. Pointing
+    // og:image at a file that may not exist would be worse than saying nothing:
+    // crawlers cache the resulting 404 and the preview silently loses its
+    // picture. A folder whose thumbnails have not been generated yet therefore
+    // yields a text-only card, which is honest and recovers by itself once the
+    // worker catches up.
+    let (image_tags, twitter_image_tag, twitter_card) = match image_url {
+        Some(url) => {
+            let url = escape_html(&url);
+            (
+                format!(
+                    "<meta property=\"og:image\" content=\"{url}\">\n\
+<meta property=\"og:image:alt\" content=\"{title_esc}\">\n"
+                ),
+                format!("<meta name=\"twitter:image\" content=\"{url}\">\n"),
+                "summary_large_image",
+            )
+        }
+        // No image means the large-image layout has nothing to show.
+        None => (String::new(), String::new(), "summary"),
+    };
+
+    // `http-equiv="refresh"` rather than an inline script: it is honoured by
+    // every browser, and unlike an inline script it cannot be blocked by a
+    // Content-Security-Policy without 'unsafe-inline'.
+    let page = format!(
+        "<!DOCTYPE html>\n\
+<html lang=\"en\">\n\
+<head>\n\
+<meta charset=\"UTF-8\">\n\
+<title>{title_esc}</title>\n\
+<meta name=\"description\" content=\"{desc_esc}\">\n\
+<meta property=\"og:type\" content=\"website\">\n\
+<meta property=\"og:site_name\" content=\"{site_esc}\">\n\
+<meta property=\"og:title\" content=\"{title_esc}\">\n\
+<meta property=\"og:description\" content=\"{desc_esc}\">\n\
+{image_tags}<meta name=\"twitter:card\" content=\"{twitter_card}\">\n\
+<meta name=\"twitter:title\" content=\"{title_esc}\">\n\
+<meta name=\"twitter:description\" content=\"{desc_esc}\">\n\
+{twitter_image_tag}<meta http-equiv=\"refresh\" content=\"0; url={redirect_esc}\">\n\
+</head>\n\
+<body>\n\
+<p><a href=\"{redirect_esc}\">Continue to {title_esc}</a></p>\n\
+</body>\n\
+</html>\n"
+    );
+
+    Ok(Html(page))
 }
 
 pub async fn get_album(

@@ -13,18 +13,49 @@ No conditional compilation or source changes are required.
 
 ## Prerequisites (All Platforms)
 
-You need the compiled `album` binary and the three frontend files:
+You need the compiled `album` binary and the frontend files:
 
 ```
-album                ← Rust binary (produced by cargo build --release)
-static/index.html    ← Frontend
-static/style.css
-static/app.js
+album                    ← Rust binary (produced by cargo build --release)
+static/index.html        ← Frontend
+static/style-<version>.css
+static/app-<version>.js
+static/og-image.png      ← Link-preview image (see below)
 ```
 
 **NB:** the CSS and JS files are currently named (and renamed after updates) for cache-busting purposes, e.g. `app-2026-09-16-1253.js` and `style-2026-09-16-1253.css` . Ensure that all references to these files are updated accordingly. Note that `index.html` itself is not versioned, so a browser holding a cached copy will keep requesting the previous asset names until it revalidates.
 
-**Link previews:** `index.html` carries static Open Graph tags that hardcode the production origin `https://www.osola.org.uk/photos/`, and `static/og-image.png` is the shared preview image. Two deployment consequences: the tags only describe the site correctly when it is served from that origin, and the image must be uploaded with the rest of `static/` or crawlers receive a 404 and the previews lose their picture. Crawlers cache previews aggressively — after changing these, re-scrape with the Facebook Sharing Debugger or by appending a throwaway query string.
+**Link previews:** `album.toml` must set `server.public_url` (the externally visible base URL, trailing slash included) and `server.site_name`. `public_url` is what builds the absolute URLs that `/api/share` returns, and crawlers reject relative ones. `static/index.html` additionally carries static Open Graph tags that hardcode the production origin, with `static/og-image.png` as the preview image, so both must be uploaded with the rest of `static/` or crawlers get a 404 and previews lose their picture. Note that the *service* only ever uses per-item thumbnails — it never references `og-image.png` — so that file is purely a frontend concern. Keep the hardcoded origin in `index.html` and `public_url` in step if the site ever moves. Crawlers cache previews aggressively — after changing any of this, re-scrape with the Facebook Sharing Debugger or by appending a throwaway query string.
+
+**Upgrading an existing deployment:** `public_url` and `site_name` are required fields, so the service will refuse to start without them. Add them to `album.toml` **before** swapping in the new binary: serde ignores unknown fields, so an older binary reads the new config without complaint. That ordering avoids a failed start.
+
+### Customising the frontend for your deployment
+
+Nothing in `app.js` is site-specific: it reads the album name from the `<h1>`, and its `/api` and `/photoalbum` prefixes are virtual paths that match the Caddy config. Everything you need to change lives in two files.
+
+**`static/index.html`** — eight places:
+
+| Line | What to change |
+|---|---|
+| `<title>` | Browser tab / fallback title |
+| `<h1>` | The album name shown in the header |
+| `return to main site` link | Points at `/index.html` by default |
+| `og:site_name`, `og:title` | The album name |
+| `og:image:alt` | The album name |
+| `og:image`, `twitter:image` | **Absolute** URLs to your own preview image |
+| `twitter:title` | The album name |
+| `og:description`, `twitter:description` | Your own one-liner |
+
+The `og:image` and `twitter:image` values must be absolute and must point at a real, publicly fetchable file. A 404 here is worse than omitting the tag, because crawlers cache the failure.
+
+**`static/og-image.png`** — entirely optional, and entirely yours:
+
+- 1200×630 (1.91:1) is the recommended size. Below 600×315 most platforms drop to a small thumbnail, and below 100×100 the image is discarded.
+- Keep it under **600KB** — WhatsApp's limit. JPEG or PNG; if you switch to JPEG, update `og:image:type` in `index.html` to match.
+- There is no requirement to generate one from scratch. Any photo cropped to 1200×630 works, and is arguably a better fit for a photo album than a designed card.
+- If you would rather not have one at all, delete the file **and** the four `og:image` / `twitter:image` / `og:image:type` / `og:image:*` lines. The preview then shows text only.
+
+**`album.toml`** — `server.public_url`, `server.site_name` (keep it matching the `<h1>`), `server.bind`, `album.root`, `state.db_path`.
 
 Build from source (requires [Rust](https://rustup.rs)):
 
@@ -81,6 +112,15 @@ Create `/etc/album/album.toml`:
 # API bind address and port
 [server]
 bind = "127.0.0.1:8080"
+
+# Externally visible base URL of this site, including any path prefix and a
+# trailing slash. Link-preview crawlers require absolute URLs, so this must be
+# the URL people actually share.
+public_url = "https://album.example.com/"
+
+# Album name, shown as og:site_name and when sharing the album root.
+site_name = "Photo Album"
+
 
 # Root of the photo tree
 [album]
@@ -267,6 +307,15 @@ Create `~/Library/Application Support/album/album.toml`:
 [server]
 bind = "127.0.0.1:8080"
 
+# Externally visible base URL of this site, including any path prefix and a
+# trailing slash. Link-preview crawlers require absolute URLs, so this must be
+# the URL people actually share.
+public_url = "https://album.example.com/"
+
+# Album name, shown as og:site_name and when sharing the album root.
+site_name = "Photo Album"
+
+
 # Root of the photo tree
 [album]
 root = "/Users/YOUR_USERNAME/album"
@@ -433,6 +482,15 @@ Create `$env:APPDATA\album\album.toml` ( resolves to `C:\Users\YOURNAME\AppData\
 # API bind address and port
 [server]
 bind = "127.0.0.1:8080"
+
+# Externally visible base URL of this site, including any path prefix and a
+# trailing slash. Link-preview crawlers require absolute URLs, so this must be
+# the URL people actually share.
+public_url = "https://album.example.com/"
+
+# Album name, shown as og:site_name and when sharing the album root.
+site_name = "Photo Album"
+
 
 # Root of the photo tree
 [album]

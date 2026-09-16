@@ -135,6 +135,15 @@ Create `album.toml` yourself — the service never generates one, never writes b
 [server]
 bind = "127.0.0.1:8080"
 
+# Externally visible base URL of this site, including any path prefix and a
+# trailing slash. Link-preview crawlers require absolute URLs, so this must be
+# the URL people actually share.
+public_url = "https://album.example.com/"
+
+# Album name, shown as og:site_name and when sharing the album root.
+site_name = "Photo Album"
+
+
 # Root of the photo tree. Must exist at startup.
 [album]
 root = "/path/to/your/photos"

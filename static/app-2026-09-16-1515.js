@@ -322,11 +322,26 @@ function shareText(label) {
     return label && label !== site ? `${label} \u2014 ${site}` : site;
 }
 
-// Page URL for a folder. The empty (root) path yields a bare page URL rather
-// than a dangling "#path=".
+// Page URL for the album root, used as the fallback when no path is set.
 function folderPageUrl(path) {
     const base = `${window.location.origin}${window.location.pathname}`;
     return path ? `${base}#path=${encodeURIComponent(path)}` : base;
+}
+
+// Shareable URL for a folder or a single photo.
+//
+// These point at /api/share rather than at the SPA URL. A crawler builds a link
+// preview from Open Graph tags in the HTML it fetches, and it never runs
+// JavaScript -- so the SPA's own "#path=..." fragment, which is never sent to
+// the server, gives every shared link the same generic preview. /api/share takes
+// the same information as a query string, which does reach the server, so each
+// folder and photo previews with its own title and thumbnail. It then forwards a
+// human visitor straight on to the real destination.
+function shareUrl(path, photoName) {
+    const params = new URLSearchParams();
+    if (path) params.set('path', path);
+    if (photoName) params.set('photo', photoName);
+    return `${window.location.origin}${API_BASE}/share?${params.toString()}`;
 }
 
 function photoMediaUrl(photo) {
@@ -433,7 +448,7 @@ function shareFolder() {
     const crumbs = currentAlbum.breadcrumbs || [];
     const label = currentPath && crumbs.length ? crumbs[crumbs.length - 1].name : '';
     openShareSheet({
-        url: folderPageUrl(currentPath),
+        url: shareUrl(currentPath),
         text: shareText(label),
         label: label || siteName(),
     });
@@ -441,10 +456,10 @@ function shareFolder() {
 
 function sharePhoto() {
     const photo = currentAlbum.photos[currentViewerIndex];
-    const url = photoMediaUrl(photo);
     openShareSheet({
-        url,
-        imageUrl: url,
+        url: shareUrl(currentPath, photo.name),
+        // Pinterest wants a direct image file; the share page is HTML.
+        imageUrl: photoMediaUrl(photo),
         text: shareText(photo.name),
         label: photo.name,
     });

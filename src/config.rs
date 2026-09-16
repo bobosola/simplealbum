@@ -24,11 +24,21 @@ pub struct Config {
     pub admin: AdminConfig,
 }
 
-/// HTTP listener settings.
+/// HTTP listener settings and the site's public identity.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     /// Socket address to bind, e.g. `"127.0.0.1:8080"`.
     pub bind: String,
+    /// Externally visible base URL of this site, including any path prefix and
+    /// a trailing slash, e.g. `"https://www.osola.org.uk/photos/"`.
+    ///
+    /// Used to build the absolute URLs that link-preview crawlers require.
+    /// Crawlers never execute JavaScript and reject relative URLs, so this
+    /// cannot be derived from the request at preview time.
+    pub public_url: String,
+    /// Human-readable album name, used as `og:site_name` and as the title of a
+    /// share page for the album root.
+    pub site_name: String,
 }
 
 /// The photo tree being served.
@@ -106,6 +116,22 @@ impl Config {
         }
         if self.server.bind.trim().is_empty() {
             bail!("`server.bind` is empty");
+        }
+        let public_url = &self.server.public_url;
+        if !public_url.starts_with("http://") && !public_url.starts_with("https://") {
+            bail!(
+                "`server.public_url` `{}` must start with http:// or https://",
+                public_url
+            );
+        }
+        if !public_url.ends_with('/') {
+            bail!(
+                "`server.public_url` `{}` must end with a trailing slash",
+                public_url
+            );
+        }
+        if self.server.site_name.trim().is_empty() {
+            bail!("`server.site_name` is empty");
         }
         if self.admin.key.trim().is_empty() {
             bail!(

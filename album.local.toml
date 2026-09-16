@@ -13,6 +13,14 @@
 [server]
 bind = "127.0.0.1:18080"
 
+# Externally visible base URL of this site, with a trailing slash. Used to build
+# the absolute URLs that link-preview crawlers require (they never execute
+# JavaScript and reject relative URLs). Must be the URL people actually share.
+public_url = "https://localhost:8443/"
+
+# Shown as og:site_name and as the title when sharing the album root.
+site_name = "Bob & Karen's Photo Album"
+
 # Root of the photo tree. Must exist.
 [album]
 root = "/Users/bobosola/photos"

@@ -106,6 +106,15 @@ The service never creates the config file and never writes back to it, so the co
 # API bind address and port. Change this if 8080 is in use.
 bind = "127.0.0.1:8080"
 
+# Externally visible base URL of this site, including any path prefix and a
+# trailing slash. Link-preview crawlers require absolute URLs, so this must be
+# the URL people actually share.
+public_url = "https://album.example.com/"
+
+# Album name, shown as og:site_name and when sharing the album root.
+site_name = "Photo Album"
+
+
 [album]
 # Absolute path to the root of your photo tree.
 root = "/var/album"
@@ -216,6 +225,32 @@ With a large collection, four measures are critical:
 Base URL: `http://<bind_address>` (e.g. `127.0.0.1:8080`, set by `server.bind` in `album.toml`). Not exposed externally — Caddy reverse-proxies `/api/*`.
 
 ### Endpoints
+
+#### `GET /api/share`
+
+Returns a small HTML page whose Open Graph tags describe one folder or one photo, then forwards a human visitor to the real destination. This is the URL the frontend puts on the clipboard and in social share intents.
+
+Query params:
+- `path` (optional): relative folder path, as for `/api/album`.
+- `photo` (optional): bare filename inside `path`. Absent means "share this folder".
+
+It exists because link-preview crawlers (WhatsApp, Facebook, Slack, Telegram, iMessage...) read Open Graph tags from HTML and never execute JavaScript. The SPA keeps the album path in the URL *fragment* (`#path=...`), which browsers never send to the server, so a static `index.html` cannot describe what was shared and every link previewed identically. This endpoint receives the same information in a *query string*, which does reach the server.
+
+Response `200 OK`, `text/html`:
+
+```html
+<meta property="og:title" content="1981">
+<meta property="og:description" content="Photos and videos in 1980-89 / 1981">
+<meta property="og:image" content="https://album.example.com/photoalbum/1980-89/1981/thumbs/beach_thumb.jpeg">
+<meta http-equiv="refresh" content="0; url=https://album.example.com/#path=1980-89%2F1981">
+```
+
+Details worth knowing:
+- `og:image` is the item's **thumbnail**, never the original. Originals run to several MB, past the 600KB that WhatsApp accepts for a preview image. If no thumbnail exists yet, the original is used as a fallback.
+- Folders reuse the grid's cover resolution: an admin-chosen cover first, then the first thumbnail found in the folder or below it. If neither yields anything, the image tags are **omitted entirely** and `twitter:card` drops to `summary`, giving a text-only card. The service deliberately does not fall back to a site-wide image: it has no way to verify that such a file exists, and pointing `og:image` at a 404 is worse than saying nothing, because crawlers cache the failure.
+- `http-equiv="refresh"` performs the hand-off rather than an inline script, so no Content-Security-Policy can block it.
+- Absolute URLs come from `server.public_url`, because a crawler cannot resolve relatives and the album's URL is not derivable from the request.
+- Invalid input is rejected the same way as `/api/album`: `400` for traversal attempts or a `photo` containing a separator, `404` for paths that do not exist.
 
 #### `GET /api/album`
 
@@ -366,16 +401,21 @@ copy button, and one button per platform.
 
 The shared URL depends on context:
 
-| Context | Shared URL | Rationale |
+| Context | Shared URL | On click |
 |---|---|---|
-| Folder view | `<origin>/#path=<url-encoded folder>` | The SPA reopens that folder through its hash route, so recipients land in the album UI. The album root shares a bare page URL. |
-| Photo / video | `<origin>/photoalbum/<path>/<file>` | The direct media URL (identical to the old "Copy Link" behaviour), so recipients can view or download the file directly. |
+| Folder view | `<origin>/api/share?path=<folder>` | Previews with the folder's name and cover image; clicking opens that folder in the gallery. |
+| Photo / video | `<origin>/api/share?path=<folder>&photo=<file>` | Previews with the filename and that item's thumbnail; clicking opens the full-size media file. |
+
+The indirection through `/api/share` exists solely so previews can be item-specific — see
+Link Previews below. Anyone who follows the link lands in the same place they would
+have without it. The photo case matching the old "Copy Link" behaviour is deliberate:
+the recipient gets the image itself, as before.
 
 Targets are ordinary share/intent URLs opened in a new tab with `noopener,noreferrer`:
-Email (`mailto:`), WhatsApp, Facebook, X, Telegram, and Pinterest. Pinterest is
-offered only when an image URL exists — i.e. from the viewer, never from a folder.
-When `navigator.share` is available (most mobile browsers) a native "Share…" entry
-is listed first.
+Email (`mailto:`), WhatsApp, Facebook, X, Telegram, and Pinterest. Pinterest is offered
+whenever an image URL is known — for a photo that is the direct media file, since
+Pinterest wants an image, not an HTML page. When `navigator.share` is available (most
+mobile browsers) a native "Share…" entry is listed first.
 
 Clipboard writes use `navigator.clipboard`, falling back to field selection plus
 `document.execCommand('copy')` where the Clipboard API is unavailable (for example
@@ -388,38 +428,49 @@ that deep-links into the viewer for a specific item.
 
 #### Link Previews (Open Graph)
 
-Static Open Graph and Twitter Card tags live in the `<head>` of `index.html`, with
-`static/og-image.png` (1200x630) as the preview image. Preview crawlers fetch the
-HTML and **do not execute JavaScript**, so these tags are the only thing that can
-describe a link when it is pasted into Facebook, WhatsApp, Slack, iMessage,
-Telegram, Signal, Discord, or LinkedIn.
+Previews come from two places.
 
-The tags are necessarily static, which has consequences worth knowing:
+**1. `/api/share` — item-specific previews.** This is what the share sheet puts on
+the clipboard, and it is the only way to get a preview that names the thing being
+shared. Preview crawlers read Open Graph tags out of an HTML `<head>` and never
+execute JavaScript, so a static file cannot describe a shared folder or photo. The
+album's route lives in the URL *fragment* (`#path=...`), which browsers never send to
+the server — the same property that keeps the admin key out of access logs. Every
+link to the SPA therefore arrives as an identical request for `/`, and previews them
+all identically. `/api/share` receives the same information as a *query string*,
+which does reach the server, and answers with tags for that one item. See the
+`GET /api/share` entry under Endpoints for the mechanics and limits.
 
-1. `og:image` and `twitter:image` must be absolute, so the production origin
-   (`https://www.osola.org.uk/photos/`) is hardcoded. If the site moves, these
-   must be updated. When served from any other origin they are inert.
-2. The album's route lives in the URL **fragment** (`#path=...`), and fragments are
-   never transmitted to the server (this is the same property that keeps the admin
-   key out of access logs — see Admin Key Protection). Every shared folder link
-   therefore produces an identical request and an identical preview card.
-3. `og:url` is deliberately **omitted**. The spec defines it as the object's
+**2. `static/index.html` — the fallback.** It carries static Open Graph and Twitter
+Card tags with `static/og-image.png` (1200x630) as the image. These apply to any URL
+that serves that page without going through `/api/share`: the bare site root, and old
+`#path=...` links shared before `/api/share` existed. Unlike the service, this file
+*does* own that image — it is a frontend asset the deployment provides, so a missing
+or unwanted `og-image.png` is handled by editing the tags beside it (see the
+customisation table in `DEPLOY.md`).
+
+Consequences worth knowing about the static tags:
+
+1. `og:image` and `twitter:image` must be absolute, so the production origin is
+   hardcoded there. If the site moves, they must be updated. The equivalent values
+   for `/api/share` come from `server.public_url` in `album.toml` instead, so those
+   must be kept in step.
+2. `og:url` is deliberately **omitted** from both. The spec defines it as the object's
    "permanent ID", and Facebook documents that all links sharing one canonical URL
-   "are treated as the same resource" and de-duplicated "when displaying them on
-   any surface". Setting it to the album root would declare every folder link to be
-   that single object, which is false, and risks previews collapsing onto the root.
-   Omitting it makes each page's own URL its canonical URL, so every shared folder
-   link keeps a distinct identity. WhatsApp lists `og:url` among its preferred tags
-   but documents that it relaxes requirements and falls back to the other mark-ups,
-   all of which are present.
+   "are treated as the same resource" and de-duplicated "when displaying them on any
+   surface". A single shared canonical would collapse every folder and photo onto one
+   object. Omitting it makes each page's own URL its canonical URL, which is correct
+   precisely because `/api/share` emits a distinct page per item. WhatsApp lists
+   `og:url` among its preferred tags but documents that it relaxes requirements and
+   falls back to the other mark-ups, all of which are present.
 
-Consequently the click destination is always the URL that was posted, fragment
-included, so a shared folder link opens that folder. Only the preview card's image
-and text are generic.
+In both cases the click destination is simply the URL that was posted, so a shared
+link always opens what it claims to.
 
-Per-folder previews would require abandoning hash routing for real paths plus
-server-side tag injection. Direct photo links need none of this: their URL *is* an
-image, so crawlers render the photo itself with no metadata involved.
+**Image size budget:** preview images must stay under WhatsApp's 600KB ceiling. The
+share page therefore points at the generated thumbnail (tens of KB), falling back to
+the original only when no thumbnail exists yet — worth remembering if that fallback
+ever becomes the common path.
 
 ### Colour Scheme (Fresh, Modern)
 The frontend supports both light and dark modes via CSS custom properties and the `prefers-color-scheme` media query. A manual toggle is also provided in the UI header.

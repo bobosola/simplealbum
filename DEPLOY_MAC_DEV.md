@@ -82,6 +82,13 @@ A pre-made local config exists at `album.local.toml`:
 [server]
 bind = "127.0.0.1:18080"
 
+# Externally visible base URL of the local site (Caddy serves it on 8443).
+public_url = "https://localhost:8443/"
+
+# Album name, shown as og:site_name and when sharing the album root.
+site_name = "Bob & Karen's Photo Album"
+
+
 # Root of the photo tree
 [album]
 root = "/Users/bobosola/photos"
