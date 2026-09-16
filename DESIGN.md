@@ -213,11 +213,14 @@ The service is designed to accept **unlimited** upload volumes (bounded only by 
 
 Sizing guide: see [Deployment](#9-deployment) and `DEPLOY.md` for the complete unit files and troubleshooting table.
 
-### Performance Considerations (10,000+ images)
+### Performance Safety Mechanisms (10,000+ images)
 
-With a large collection, four measures are critical:
+The following four mechanisms are built in to prevent OOM failures and other
+resource starvation once the collection grows large. They are properties of the
+service itself, not extra steps for the operator to take, and they hold for
+collections well beyond 10,000 images.
 
-1. **Background thumbnail worker**: The service must never block startup or API requests on thumbnail generation. New and missing thumbnails are queued and processed asynchronously.
+1. **Background thumbnail worker**: Thumbnail generation never blocks startup or API requests. New and missing thumbnails are queued and processed asynchronously.
 2. **Recursive inotify watch**: A single recursive watch on the album root avoids Linux `fs.inotify.max_user_watches` limits (default ~8,192).
 3. **Image dimension cache**: Opening every image to read its width/height on every API call is prohibitively expensive. Dimensions are cached in SQLite (see [State Management](#state-management)).
 4. **Bounded resource use**: Memory is bounded by the worker count and CPU by the systemd quota, independent of collection size or upload volume — see [Resource Protection & Limits](#resource-protection--limits).
