@@ -249,6 +249,47 @@ The worker pool limits concurrent jobs to your CPU's available parallelism (clam
 
 ---
 
+## Resource Requirements
+
+Measured against the release build on an Apple M4, with `[worker] threads = 2`
+unless noted. A small VPS is slower per core, so read the CPU figures as "one
+core per worker" rather than as absolute throughput.
+
+| State | Memory (RSS) | CPU / latency |
+|---|---|---|
+| Idle, watching 421 folders / 8,000 files | **12 MB** | **0%** |
+| Generating thumbnails, 2 workers | 49–249 MB, depending on image size | ~2 cores, saturated |
+| Generating thumbnails, 8 workers | ~453 MB (12 MP), ~785 MB (24 MP) | all cores |
+| 8,000 small images from scratch | 14 MB | 8.8 s at 2 workers |
+| First folder listing after a change | — | 17 ms (full 8,000-file walk) |
+| Later folder listings | — | <1 ms (cached) |
+
+Peak memory is `threads × one decoded frame`, and **not** the size of the
+library: 8,000 images peaked at 14 MB, while sixteen 24 MP photos peaked at
+785 MB with 8 workers. One 24 MP photo occupies ~100 MB while it is decoded
+(~55 MB at 12 MP). Freed memory is not handed back to the OS, so a peak becomes
+the steady state — size `MemoryMax` for the peak, not for idle.
+
+On a small server (1–2 cores, 1 GB) that is:
+
+- **Small at rest.** ~12 MB and no measurable CPU; the filesystem watcher is
+  not a load, even with hundreds of folders watched.
+- **A medium, one-off burst while thumbnails are built.** CPU-bound at roughly
+  0.1 core-seconds per 12–24 MP photo, so ~1,000 photos is ~2 minutes of one
+  core. The web UI stays usable throughout and fills in progressively.
+- **Sized by memory, not by disk, CPU or library size.** Set `[worker] threads`
+  so that `threads × 100 MB` fits your `MemoryMax` — `threads = 2` with
+  `MemoryMax=512M` on a 1 GB VPS, `threads = 4` with 1 GB. Serving photos costs
+  the service nothing: they are static files served by the web server.
+
+What a *visitor* costs is bandwidth rather than server CPU: a thumbnail is
+~14 KB, while the viewer preloads the neighbouring originals — on a real album,
+a sample of 17 photos had a median of 0.8 MB and a maximum of 4.4 MB, so a step
+through the viewer fetches a few MB. That traffic goes through the web server,
+not through this service.
+
+---
+
 ## Data Storage
 
 Simple Album uses an embedded **SQLite** database to cache photo dimensions and persist folder cover selections. SQLite was chosen over flat files (JSON, XML, etc.) because it provides indexed lookups, concurrent read/write access via WAL mode, and atomic updates. A separate database server or manual file-locking logic is not required.

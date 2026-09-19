@@ -270,8 +270,8 @@ db_path = "/var/lib/album/album.db"
 [worker]
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 # Lower this on small servers to reduce peak memory (each job can hold a
-# full decoded frame; 24 MP decodes to ~72 MB, so 8 workers can peak at
-# ~800 MB).
+# full decoded frame; a 24 MP JPEG measures ~100 MB while decoding, so
+# 8 workers can peak at ~800 MB).
 threads = 0
 
 # Shared secret for admin (cover image) operations. Must not be empty; the
@@ -341,8 +341,9 @@ WantedBy=multi-user.target
 
 > **Note on `MemoryMax`**: the thumbnail worker decodes each source image
 > in full before resizing. Measured on a 14-core machine (auto worker
-> count = 8): a burst of 12 MP iPhone-class JPEGs peaks at ~460 MB, and
-> 24 MP photos (6000×4000) at ~790 MB — so the default unit uses 1G.
+> count = 8): a burst of 12 MP iPhone-class JPEGs peaks at ~453 MB, and
+> 24 MP photos (6000×4000) at ~785 MB — so the default unit uses 1G. The peak
+> is not handed back to the OS afterwards, so the process keeps that RSS.
 > On a small server, set `[worker] threads = 2` in `album.toml` and
 > `MemoryMax=512M` is sufficient again. If you see OOM kills in
 > `dmesg`, raise `MemoryMax` via `systemctl edit album-service` or lower
@@ -476,8 +477,8 @@ root = "/Users/YOUR_USERNAME/album"
 [worker]
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 # Lower this on small servers to reduce peak memory (each job can hold a
-# full decoded frame; 24 MP decodes to ~72 MB, so 8 workers can peak at
-# ~800 MB).
+# full decoded frame; a 24 MP JPEG measures ~100 MB while decoding, so
+# 8 workers can peak at ~800 MB).
 threads = 0
 
 # SQLite database location
@@ -663,8 +664,8 @@ root = "C:\\album"
 [worker]
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
 # Lower this on small servers to reduce peak memory (each job can hold a
-# full decoded frame; 24 MP decodes to ~72 MB, so 8 workers can peak at
-# ~800 MB).
+# full decoded frame; a 24 MP JPEG measures ~100 MB while decoding, so
+# 8 workers can peak at ~800 MB).
 threads = 0
 
 # SQLite database location
