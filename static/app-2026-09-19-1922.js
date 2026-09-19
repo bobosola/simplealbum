@@ -12,25 +12,43 @@ let currentAlbum = null;
 let currentViewerIndex = -1;
 let adminKey = localStorage.getItem('album_admin_key') || '';
 
-// Admin mode from fragment
-function initAdmin() {
+// Admin mode from fragment.
+//
+// `adoptAdminKeyFromHash` is separate from `initAdmin` because it has to be
+// callable more than once: entering a URL that differs only in its *fragment* —
+// which is exactly what pasting an admin link into a tab that already has the
+// album open does — is a same-document navigation. The browser swaps the
+// fragment and fires `hashchange` **without reloading the page**, so anything
+// that only runs at load time never runs, and admin mode silently never turns
+// on. (Chrome behaves this way; the Safari attempt happened to be a real page
+// load, which is why it worked.) Returns true when a fragment was consumed.
+function adoptAdminKeyFromHash() {
     const hash = window.location.hash;
-    if (hash.startsWith('#admin=')) {
-        adminKey = hash.slice(7);
-        localStorage.setItem('album_admin_key', adminKey);
-        history.replaceState(null, '', window.location.pathname + window.location.search);
-    }
+    if (!hash.startsWith('#admin=')) return false;
+    adminKey = hash.slice(7);
+    localStorage.setItem('album_admin_key', adminKey);
+    // Strip it immediately: it must not reach history, `Referer`, or a URL the
+    // user later copies out of the address bar.
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    return true;
+}
+
+// The badge reflects whether a key is held, so it can appear mid-session.
+function refreshAdminBadge() {
+    document.getElementById('admin-badge').classList.toggle('hidden', !adminKey);
+}
+
+function initAdmin() {
     const badge = document.getElementById('admin-badge');
-    if (adminKey) {
-        badge.classList.remove('hidden');
-        badge.style.cursor = 'pointer';
-        badge.addEventListener('click', () => {
-            localStorage.removeItem('album_admin_key');
-            adminKey = '';
-            showToast('Admin mode exited');
-            setTimeout(() => location.reload(), 500);
-        });
-    }
+    badge.style.cursor = 'pointer';
+    badge.addEventListener('click', () => {
+        localStorage.removeItem('album_admin_key');
+        adminKey = '';
+        showToast('Admin mode exited');
+        setTimeout(() => location.reload(), 500);
+    });
+    adoptAdminKeyFromHash();
+    refreshAdminBadge();
 }
 
 // Theme
@@ -60,12 +78,15 @@ function showToast(msg) {
 }
 
 // History management
+// The path from a `#path=` fragment, decoded. Returns `null` when the fragment
+// is something else (`#admin=…`, or no fragment at all) so callers can tell
+// "the root folder was requested" apart from "no folder was requested".
 function getPathFromHash() {
     const hash = window.location.hash;
     if (hash.startsWith('#path=')) {
         return decodeURIComponent(hash.slice(6));
     }
-    return '';
+    return null;
 }
 
 function navigateTo(path) {
@@ -645,8 +666,31 @@ window.addEventListener('popstate', e => {
         hideViewer();
     }
 
-    const path = state?.path ?? getPathFromHash();
+    // A state-less entry with no `#path=` fragment (a bare album URL, or the
+    // history entry the admin key was stripped from) carries no destination, so
+    // leave the album where it is rather than bouncing to the root.
+    const path = state?.path ?? getPathFromHash() ?? currentPath;
     if (path !== currentPath) {
+        loadAlbum(path);
+    }
+});
+
+// A fragment-only navigation does not reload the page, so `hashchange` is the
+// only hook that runs when an admin link (or a deep link) is pasted into a tab
+// that already has the album open. Handle both kinds of fragment here; the SPA's
+// own navigation uses `pushState`, which never fires this.
+window.addEventListener('hashchange', () => {
+    if (adoptAdminKeyFromHash()) {
+        refreshAdminBadge();
+        // The "Set as cover" stars are rendered from `adminKey`, so a grid that
+        // was drawn before the key arrived has to be redrawn for them to show.
+        renderGrid();
+        showToast('Admin mode enabled');
+        return;
+    }
+    const path = getPathFromHash();
+    if (path !== null && path !== currentPath) {
+        hideViewer();
         loadAlbum(path);
     }
 });
@@ -716,8 +760,8 @@ document.getElementById('share-sheet').addEventListener('click', e => {
 document.getElementById('cover-cancel').addEventListener('click', closeCoverModal);
 document.getElementById('cover-confirm').addEventListener('click', confirmCover);
 
-// Init — read path from URL hash BEFORE admin init clears it
-const initialPath = getPathFromHash();
+// Init — read any path from the fragment before `initAdmin` strips an admin one.
+const initialPath = getPathFromHash() ?? '';
 initAdmin();
 initTheme();
 loadAlbum(initialPath);
