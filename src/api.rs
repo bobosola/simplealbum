@@ -10,6 +10,7 @@ use tracing::{info, warn};
 use crate::{
     config::Config,
     counts::CountCache,
+    covers::CoverCache,
     db::Db,
     models::{AlbumResponse, Breadcrumb, FolderItem, PhotoItem, SetCoverRequest},
     util,
@@ -21,6 +22,9 @@ pub struct AppState {
     /// Recursive folder counts, invalidated by the filesystem watcher. See
     /// [`crate::counts`].
     pub counts: std::sync::Arc<CountCache>,
+    /// Computed cover resolutions, invalidated by the filesystem watcher and by
+    /// `set_cover`. See [`crate::covers`].
+    pub covers: std::sync::Arc<CoverCache>,
 }
 
 #[derive(Deserialize)]
@@ -134,10 +138,13 @@ pub async fn share_page(
     // async worker thread that also serves `/api/health`.
     let cfg = state.config.clone();
     let db = state.db.clone();
+    let covers = state.covers.clone();
     let photo = photo.to_string();
-    let card = tokio::task::spawn_blocking(move || build_share_card(&cfg, &db, &rel, &photo))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    let card = tokio::task::spawn_blocking(move || {
+        build_share_card(&cfg, &db, &covers, &rel, &photo)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
     let title_esc = escape_html(&card.title);
     let site_esc = escape_html(&state.config.server.site_name);
@@ -207,6 +214,7 @@ struct ShareCard {
 fn build_share_card(
     cfg: &Config,
     db: &Db,
+    covers: &CoverCache,
     rel: &str,
     photo: &str,
 ) -> Result<ShareCard, StatusCode> {
@@ -237,11 +245,13 @@ fn build_share_card(
         };
         // Reuses the same cover resolution as the grid: an admin-chosen cover
         // first, then the first thumbnail found in the folder or below it.
+        // `get_cover` is a single indexed read, so a point query is right here;
+        // the listing uses the batched form because it resolves many folders.
         let cover = db
             .get_cover(rel)
             .filter(|full| root.join(full).exists())
             .and_then(|full| compute_cover_thumb(rel, &full))
-            .or_else(|| find_first_thumb_recursive(root, rel));
+            .or_else(|| resolve_cover(root, covers, rel));
         let image = cover.map(|c| {
             media(&if rel.is_empty() {
                 c.clone()
@@ -321,9 +331,10 @@ pub async fn get_album(
     let root = state.config.album.root.clone();
     let db = state.db.clone();
     let counts = state.counts.clone();
+    let covers = state.covers.clone();
     let rel = rel_path.clone();
     let response = tokio::task::spawn_blocking(move || {
-        build_album_response(&root, &db, &counts, &rel, &abs_path)
+        build_album_response(&root, &db, &counts, &covers, &rel, &abs_path)
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -336,6 +347,7 @@ fn build_album_response(
     root: &std::path::Path,
     db: &Db,
     counts: &CountCache,
+    covers: &CoverCache,
     rel_path: &str,
     abs_path: &std::path::Path,
 ) -> Result<AlbumResponse, StatusCode> {
@@ -347,9 +359,6 @@ fn build_album_response(
 
     let breadcrumbs = build_breadcrumbs(rel_path);
 
-    let mut folders = vec![];
-    let mut photos = vec![];
-
     let entries = std::fs::read_dir(abs_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
     entries.sort_by(|a, b| {
@@ -358,64 +367,109 @@ fn build_album_response(
         an.cmp(&bn)
     });
 
+    // Split the folder into subfolders and media first, so the two database
+    // lookups below can each be a single batched query rather than one point
+    // query per entry.
+    let mut subfolders: Vec<String> = Vec::new();
+    let mut media: Vec<String> = Vec::new(); // file names, in listing order
     for entry in entries {
         let fname = entry.file_name();
         let fname_str = fname.to_string_lossy();
         if fname_str.starts_with('.') || fname_str == "thumbs" {
             continue;
         }
-        let meta = entry.metadata();
-        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-
-        if is_dir {
-            let sub_path = if rel_path.is_empty() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            // `file_type()` reports the link itself. A link to a directory is
+            // not descended into (see `crate::worker::walk_dir` for why), so it
+            // must not be offered as a folder either, and a link whose target
+            // is gone can never be served, so it is not offered as a photo.
+            let Ok(target) = std::fs::metadata(entry.path()) else {
+                continue;
+            };
+            if target.is_dir() {
+                continue;
+            }
+            if !util::is_media_file(&fname_str) {
+                continue;
+            }
+        } else if file_type.is_dir() {
+            subfolders.push(if rel_path.is_empty() {
                 fname_str.to_string()
             } else {
                 format!("{}/{}", rel_path, fname_str)
-            };
-            // Answered from the cache on every level below the first, so
-            // browsing does not re-walk the tree once per folder visited.
-            let (count_photos, count_albums) = counts.count(root, &sub_path);
-            let cover = db.get_cover(&sub_path)
-                .filter(|full_path| {
-                    // Verify the cover image still exists (wasn't deleted)
-                    let full = root.join(full_path);
-                    full.exists()
-                })
-                .and_then(|full_path| compute_cover_thumb(&sub_path, &full_path))
-                .or_else(|| find_first_thumb_recursive(root, &sub_path));
-            folders.push(FolderItem {
-                name: fname_str.to_string(),
-                path: sub_path,
-                cover,
-                count_photos,
-                count_albums,
             });
-        } else if util::is_media_file(&fname_str) {
-            let photo_rel = if rel_path.is_empty() {
-                fname_str.to_string()
-            } else {
-                format!("{}/{}", rel_path, fname_str)
-            };
-            let (width, height, duration) = db.get_metadata(&photo_rel)
-                .map(|(w, h, duration, _)| (w, h, duration))
-                .unwrap_or((0, 0, None));
-            let thumb = format!("thumbs/{}", util::thumb_name(&fname_str));
-            let mtype = util::media_type(&fname_str);
-            // Duration is only meaningful for videos. It is absent until the
-            // worker has probed the file, and the frontend simply omits it in
-            // that case (previously this was hardcoded to 0, which the
-            // frontend treats as falsy, so it was never displayed at all).
-            let duration = if mtype == "video" { duration } else { None };
-            photos.push(PhotoItem {
-                name: fname_str.to_string(),
-                media_type: mtype.to_string(),
-                thumb,
-                width,
-                height,
-                duration,
-            });
+            continue;
+        } else if !util::is_media_file(&fname_str) {
+            continue;
         }
+        media.push(fname_str.to_string());
+    }
+
+    let photo_paths: Vec<String> = media
+        .iter()
+        .map(|name| {
+            if rel_path.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", rel_path, name)
+            }
+        })
+        .collect();
+    let metadata = db.get_metadata_for(&photo_paths);
+    let explicit_covers = db.get_covers(&subfolders);
+
+    let mut folders = Vec::with_capacity(subfolders.len());
+    for sub_path in subfolders {
+        // Answered from the cache on every level below the first, so browsing
+        // does not re-walk the tree once per folder visited.
+        let (count_photos, count_albums) = counts.count(root, &sub_path);
+        // A stored cover is consulted first, but only when it still points at a
+        // file that exists; otherwise the computed fallback is used.
+        let explicit = explicit_covers
+            .get(&sub_path)
+            .filter(|full_path| root.join(full_path).exists())
+            .and_then(|full_path| compute_cover_thumb(&sub_path, full_path));
+        let cover = match explicit {
+            Some(thumb) => Some(thumb),
+            None => resolve_cover(root, covers, &sub_path),
+        };
+        let name = sub_path.rsplit('/').next().unwrap_or(&sub_path).to_string();
+        folders.push(FolderItem {
+            name,
+            path: sub_path,
+            cover,
+            count_photos,
+            count_albums,
+        });
+    }
+
+    let mut photos = Vec::with_capacity(media.len());
+    for (name, photo_rel) in media.into_iter().zip(photo_paths) {
+        let (width, height, duration) = metadata
+            .get(&photo_rel)
+            .map(|m| (m.width, m.height, m.duration))
+            .unwrap_or((0, 0, None));
+        let thumb = format!("thumbs/{}", util::thumb_name(&name));
+        let mtype = util::media_type(&name);
+        // Duration is only meaningful for videos, and a zero recorded by an
+        // older build means "unknown" rather than "instant". It is absent
+        // until the worker has probed the file; the frontend omits it then.
+        let duration = if mtype == "video" {
+            duration.filter(|secs| *secs > 0)
+        } else {
+            None
+        };
+        photos.push(PhotoItem {
+            name,
+            media_type: mtype.to_string(),
+            thumb,
+            width,
+            height,
+            duration,
+        });
     }
 
     Ok(AlbumResponse {
@@ -454,6 +508,11 @@ pub async fn set_cover(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    // `validate_path` both rejects traversal and normalises, so what is stored
+    // below is the canonical album-relative path. Storing the request string
+    // verbatim meant a target of `"1970-79/"` (or an image of `"./a.jpg"`)
+    // produced a row that `get_cover("1970-79")` can never match: the API
+    // answered 204 and the cover silently never appeared.
     let image_path = util::validate_path(&body.image_path).ok_or(StatusCode::BAD_REQUEST)?;
     let image_abs = util::resolve_album_path_checked(&state.config.album.root, &image_path)
         .map_err(|e| match e {
@@ -468,6 +527,11 @@ pub async fn set_cover(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    // Every target is validated before anything is written. Writing as we went
+    // meant a list whose last entry was invalid still applied its earlier
+    // entries and then answered 400 — the caller saw a failure, the database
+    // saw a partial success.
+    let mut targets = Vec::with_capacity(body.targets.len());
     for target in &body.targets {
         let target = util::validate_path(target).ok_or(StatusCode::BAD_REQUEST)?;
         tracing::debug!("set_cover: target={}, image_path={}", target, image_path);
@@ -486,14 +550,22 @@ pub async fn set_cover(
             );
             return Err(StatusCode::NOT_FOUND);
         }
+        targets.push(target);
+    }
+
+    for target in &targets {
         // Store the full relative image path so covers work across folder levels
-        state.db.set_cover(&target, &image_path)
+        state.db.set_cover(target, &image_path)
             .map_err(|e| {
                 warn!("set_cover database error for target '{}': {}", target, e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
         info!("set_cover: stored cover for '{}' → '{}'", target, image_path);
     }
+
+    // The cover a listing shows is cached; this write did not touch the
+    // filesystem, so the watcher will not report it.
+    state.covers.invalidate();
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -522,16 +594,50 @@ fn build_breadcrumbs(rel_path: &str) -> Vec<Breadcrumb> {
     crumbs
 }
 
+/// Resolve the cover a listing should show for `folder`.
+///
+/// The expensive half — walking the folder and its descendants for a usable
+/// thumbnail — is memoised in `covers` and dropped when the watcher reports a
+/// change. Only the *computed* answer is cached: an admin's explicit choice is
+/// applied by the caller (a single batched query) because that lives in the
+/// database rather than the filesystem.
+fn resolve_cover(
+    root: &std::path::Path,
+    covers: &CoverCache,
+    folder: &str,
+) -> Option<String> {
+    covers.get_or_compute(folder, || find_first_thumb_recursive(root, folder))
+}
+
 /// Find the first available thumbnail in a folder or any of its descendants.
 /// Searches the folder itself, then immediate children, then grandchildren.
 /// Returns a relative thumbnail path (e.g. "thumbs/photo_thumb.jpg" or
 /// "subfolder/thumbs/photo_thumb.jpg") or None.
+///
+/// The result is memoised by [`resolve_cover`], which is what keeps a listing
+/// from repeating these `read_dir` calls once per subfolder.
 fn find_first_thumb_recursive(root: &std::path::Path, rel: &str) -> Option<String> {
     let base = root.join(rel);
-    let base_canonical = std::fs::canonicalize(&base).unwrap_or(base.clone());
+
+    // Build a path relative to the folder being described by construction
+    // rather than by canonicalising: every candidate below is reached from
+    // `base` through names read out of the directory, so the join already is
+    // the answer. `canonicalize` here cost a syscall per child and grandchild
+    // and could never change the result.
+    let rel_of = |parts: &[&str], thumb: &str| -> String {
+        if parts.is_empty() {
+            format!("thumbs/{thumb}")
+        } else {
+            format!("{}/thumbs/{thumb}", parts.join("/"))
+        }
+    };
 
     // Helper: check a single directory for thumbnails.
     // Returns the thumbnail filename (not path) if found.
+    //
+    // The `sources` set below is built from the directory listing, so it counts
+    // the entries that are *named* like media and filters out `thumbs`, hidden
+    // files and non-media names — the same rule the listing uses.
     let check_dir = |dir: &std::path::Path| -> Option<String> {
         let thumbs_dir = dir.join("thumbs");
         if !thumbs_dir.is_dir() {
@@ -573,67 +679,60 @@ fn find_first_thumb_recursive(root: &std::path::Path, rel: &str) -> Option<Strin
         None
     };
 
-    // Helper: build a relative path string from an absolute path under base.
-    let to_rel = |abs: &std::path::Path| -> Option<String> {
-        let c = std::fs::canonicalize(abs).unwrap_or(abs.to_path_buf());
-        c.strip_prefix(&base_canonical)
-            .ok()
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-    };
-
     // 1. Check the folder itself
     if let Some(t) = check_dir(&base) {
-        return Some(format!("thumbs/{}", t));
+        return Some(rel_of(&[], &t));
     }
 
     // 2. Check immediate children (sorted)
     let Ok(entries) = std::fs::read_dir(&base) else { return None };
     let mut children: Vec<_> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            let name = e.file_name();
-            let s = name.to_string_lossy();
-            e.metadata().map(|m| m.is_dir()).unwrap_or(false)
-                && !s.starts_with('.')
-                && s != "thumbs"
-        })
+        .filter(is_searchable_dir)
         .collect();
     children.sort_by_key(|a| a.file_name());
 
     for child in &children {
-        let child_path = child.path();
-        if let Some(t) = check_dir(&child_path) {
-            let joined = child_path.join("thumbs").join(&t);
-            return to_rel(&joined);
+        let child_name = child.file_name();
+        let child_name = child_name.to_string_lossy();
+        if let Some(t) = check_dir(&child.path()) {
+            return Some(rel_of(&[&child_name], &t));
         }
     }
 
     // 3. Check grandchildren (first child's first child, etc.)
     for child in &children {
-        let child_path = child.path();
-        let Ok(grandchildren) = std::fs::read_dir(&child_path) else { continue };
+        let child_name = child.file_name();
+        let child_name = child_name.to_string_lossy();
+        let Ok(grandchildren) = std::fs::read_dir(child.path()) else { continue };
         let mut gc: Vec<_> = grandchildren
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                let name = e.file_name();
-                let s = name.to_string_lossy();
-                e.metadata().map(|m| m.is_dir()).unwrap_or(false)
-                    && !s.starts_with('.')
-                    && s != "thumbs"
-            })
+            .filter(is_searchable_dir)
             .collect();
         gc.sort_by_key(|a| a.file_name());
 
         for gc_entry in &gc {
-            let gc_path = gc_entry.path();
-            if let Some(t) = check_dir(&gc_path) {
-                let joined = gc_path.join("thumbs").join(&t);
-                return to_rel(&joined);
+            let gc_name = gc_entry.file_name();
+            let gc_name = gc_name.to_string_lossy();
+            if let Some(t) = check_dir(&gc_entry.path()) {
+                return Some(rel_of(&[&child_name, &gc_name], &t));
             }
         }
     }
 
     None
+}
+
+/// Whether a directory entry is a real subfolder worth searching: a directory,
+/// not hidden, not a `thumbs` folder, and not a symlink (which may point
+/// outside the album or back up its own tree).
+fn is_searchable_dir(entry: &std::fs::DirEntry) -> bool {
+    let name = entry.file_name();
+    let name = name.to_string_lossy();
+    if name.starts_with('.') || name == "thumbs" {
+        return false;
+    }
+    entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
 }
 
 /// Convert a full image path (from album root) into the thumbnail path
@@ -741,5 +840,241 @@ mod tests {
             compute_cover_thumb("1980-89", "1980-89/beach.jpg"),
             Some("thumbs/beach_thumb.jpg".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::testutil::{TempTree, config_for, TEST_ADMIN_KEY};
+    use axum::http::HeaderMap;
+
+    fn state_for(tree: &TempTree, db: std::sync::Arc<Db>) -> Arc<AppState> {
+        Arc::new(AppState {
+            config: config_for(&tree.0, &tree.path("album.db")),
+            db,
+            counts: Arc::new(CountCache::new()),
+            covers: Arc::new(CoverCache::new()),
+        })
+    }
+
+    fn admin_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Admin-Key", TEST_ADMIN_KEY.parse().unwrap());
+        headers
+    }
+
+    /// The bug this covers: `set_cover` stored the request string verbatim, so
+    /// a target of `"1970-79/"` (or an image of `"./…"`) produced a row that
+    /// `get_cover("1970-79")` could never match. The API answered 204 and the
+    /// cover silently never appeared.
+    #[tokio::test]
+    async fn set_cover_stores_canonical_paths() {
+        let tree = TempTree::new();
+        tree.file("1970-79/1970/a.jpg");
+        let db = Arc::new(Db::open_in_memory().unwrap());
+
+        let body = SetCoverRequest {
+            image_path: "./1970-79/1970/a.jpg".to_string(),
+            targets: vec!["1970-79/".to_string(), "1970-79//".to_string(), "".to_string()],
+        };
+        let result = set_cover(
+            State(state_for(&tree, db.clone())),
+            admin_headers(),
+            Json(body),
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), StatusCode::NO_CONTENT);
+        let expected = Some("1970-79/1970/a.jpg".to_string());
+        assert_eq!(db.get_cover("1970-79"), expected);
+        assert_eq!(db.get_cover(""), expected, "the album root is a valid target");
+        // No un-normalised key was written.
+        assert_eq!(db.get_cover("1970-79/"), None);
+        assert_eq!(db.get_cover("./1970-79/1970/a.jpg"), None);
+    }
+
+    #[tokio::test]
+    async fn set_cover_rejects_a_target_that_is_not_an_ancestor() {
+        let tree = TempTree::new();
+        tree.file("a/photo.jpg");
+        tree.dir("b");
+        let db = Arc::new(Db::open_in_memory().unwrap());
+
+        let body = SetCoverRequest {
+            image_path: "a/photo.jpg".to_string(),
+            targets: vec!["b".to_string()],
+        };
+        let result = set_cover(State(state_for(&tree, db.clone())), admin_headers(), Json(body)).await;
+
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+        assert_eq!(db.get_cover("b"), None);
+    }
+
+    #[tokio::test]
+    async fn set_cover_applies_nothing_when_any_target_is_invalid() {
+        let tree = TempTree::new();
+        tree.file("a/photo.jpg");
+        tree.dir("b");
+        let db = Arc::new(Db::open_in_memory().unwrap());
+
+        // `a` is valid, `b` is not an ancestor: neither may be written.
+        let body = SetCoverRequest {
+            image_path: "a/photo.jpg".to_string(),
+            targets: vec!["a".to_string(), "b".to_string()],
+        };
+        let result = set_cover(State(state_for(&tree, db.clone())), admin_headers(), Json(body)).await;
+
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+        assert_eq!(db.get_cover("a"), None, "a valid target must not be written either");
+    }
+
+    #[tokio::test]
+    async fn set_cover_requires_the_admin_key() {
+        let tree = TempTree::new();
+        tree.file("a/photo.jpg");
+        let db = Arc::new(Db::open_in_memory().unwrap());
+
+        let body = SetCoverRequest {
+            image_path: "a/photo.jpg".to_string(),
+            targets: vec!["".to_string()],
+        };
+        let result = set_cover(
+            State(state_for(&tree, db.clone())),
+            HeaderMap::new(),
+            Json(body),
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
+        assert_eq!(db.get_cover(""), None);
+    }
+
+    fn list(tree: &TempTree, db: &Db) -> AlbumResponse {
+        build_album_response(
+            &tree.0,
+            db,
+            &CountCache::new(),
+            &CoverCache::new(),
+            "",
+            &tree.0,
+        )
+        .expect("listing")
+    }
+
+    /// A symlinked directory is not browsable (the worker will not walk it), so
+    /// it must not be offered as a folder, and a symlink whose target is gone
+    /// can never be served, so it must not be offered as a photo. Symlinked
+    /// *files* that do resolve are still listed.
+    #[cfg(unix)]
+    #[test]
+    fn links_are_listed_only_when_they_resolve_to_a_usable_target() {
+        let tree = TempTree::new();
+        let outside = TempTree::new();
+        tree.file("real.jpg");
+        outside.dir("elsewhere");
+
+        std::os::unix::fs::symlink("real.jpg", tree.path("link.jpg")).unwrap();
+        std::os::unix::fs::symlink("gone.jpg", tree.path("dangling.jpg")).unwrap();
+        std::os::unix::fs::symlink(outside.path("elsewhere"), tree.path("linked-dir")).unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        let response = list(&tree, &db);
+
+        let photos: Vec<&str> = response.photos.iter().map(|p| p.name.as_str()).collect();
+        assert!(photos.contains(&"real.jpg"), "photos: {photos:?}");
+        assert!(photos.contains(&"link.jpg"), "photos: {photos:?}");
+        assert!(!photos.contains(&"dangling.jpg"), "photos: {photos:?}");
+
+        let folders: Vec<&str> = response.folders.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            !folders.contains(&"linked-dir"),
+            "a symlinked directory must not be listed as a folder: {folders:?}"
+        );
+    }
+
+    #[test]
+    fn a_folder_listing_reports_the_metadata_it_has() {
+        let tree = TempTree::new();
+        tree.file("a.jpg");
+        tree.file("b.mp4");
+        tree.file("thumbs/a_thumb.jpg");
+        tree.dir("sub");
+        let db = Db::open_in_memory().unwrap();
+        db.set_metadata("a.jpg", 400, 300, None, 1, true).unwrap();
+        db.set_metadata("b.mp4", 1920, 1080, Some(90), 2, true).unwrap();
+        // A zero written by an older build means "unknown", not "instant".
+        db.set_metadata("c.mp4", 640, 480, Some(0), 3, true).unwrap();
+
+        let response = list(&tree, &db);
+
+        let by_name = |name: &str| response.photos.iter().find(|p| p.name == name).unwrap();
+        assert_eq!((by_name("a.jpg").width, by_name("a.jpg").height), (400, 300));
+        assert_eq!(by_name("b.mp4").duration, Some(90));
+        assert_eq!(by_name("b.mp4").media_type, "video");
+        assert_eq!(by_name("a.jpg").thumb, "thumbs/a_thumb.jpg");
+        // The thumbs folder is not itself listed, and metadata-less files fall
+        // back to zero dimensions rather than being dropped.
+        assert_eq!(response.folders.len(), 1);
+        assert_eq!(response.folders[0].name, "sub");
+    }
+
+    #[test]
+    fn the_computed_cover_is_cached_until_it_is_invalidated() {
+        let tree = TempTree::new();
+        let covers = CoverCache::new();
+
+        // Nothing to find yet: the miss is cached as "no cover".
+        assert_eq!(resolve_cover(&tree.0, &covers, "b"), None);
+        tree.file("b/photo.jpg");
+        tree.file("b/thumbs/photo_thumb.jpg");
+        assert_eq!(
+            resolve_cover(&tree.0, &covers, "b"),
+            None,
+            "a memoised miss must not be recomputed for every request"
+        );
+
+        // The watcher invalidates on exactly this kind of change.
+        covers.invalidate();
+        assert_eq!(
+            resolve_cover(&tree.0, &covers, "b"),
+            Some("thumbs/photo_thumb.jpg".to_string())
+        );
+
+        // A cover is only offered when its source still exists.
+        std::fs::remove_file(tree.path("b/photo.jpg")).unwrap();
+        covers.invalidate();
+        assert_eq!(resolve_cover(&tree.0, &covers, "b"), None);
+    }
+
+    #[test]
+    fn cover_lookup_prefers_the_stored_choice_and_falls_back_to_the_walk() {
+        let tree = TempTree::new();
+        tree.file("sub/photo.jpg");
+        tree.file("sub/thumbs/photo_thumb.jpg");
+        let db = Db::open_in_memory().unwrap();
+        let covers = CoverCache::new();
+
+        // No stored choice: the walk finds the only thumbnail.
+        assert_eq!(resolve_cover(&tree.0, &covers, "sub"), Some("thumbs/photo_thumb.jpg".to_string()));
+
+        // A stored choice wins over the computed one, and is relative to the
+        // folder that owns it.
+        assert_eq!(
+            compute_cover_thumb("sub", "sub/photo.jpg"),
+            Some("thumbs/photo_thumb.jpg".to_string())
+        );
+        assert_eq!(compute_cover_thumb("", "sub/photo.jpg"), Some("sub/thumbs/photo_thumb.jpg".to_string()));
+        assert!(db.get_cover("sub").is_none());
+    }
+
+    #[test]
+    fn a_trailing_slash_cannot_add_an_empty_breadcrumb() {
+        let normalised = util::validate_path("1970-79/1970/").unwrap();
+        assert_eq!(normalised, "1970-79/1970");
+        let crumbs = build_breadcrumbs(&normalised);
+        assert_eq!(crumbs.len(), 3, "Home / 1970-79 / 1970");
+        assert!(crumbs.iter().all(|c| !c.name.is_empty()));
     }
 }

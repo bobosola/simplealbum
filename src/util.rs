@@ -1,6 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 
-/// Validate a relative path supplied by a client.
+/// Validate a relative path supplied by a client, returning its canonical
+/// album-relative form.
 ///
 /// Returns `None` for anything that could address a location outside the album
 /// root: `..` segments, and absolute paths or Windows drive prefixes. The
@@ -9,6 +10,12 @@ use std::path::{Component, Path, PathBuf};
 /// path inside the root. Callers join the returned value to the album root, so
 /// accepting one here would silently escape the tree on the unguarded call
 /// paths (`thumb::delete_thumb`, `api::set_cover`).
+///
+/// Accepted paths are normalised on the way out (see [`normalize_rel_path`]).
+/// Normalising here rather than at each call site is what stops a request for
+/// `"1970-79/"` from producing a breadcrumb with an empty name, a second cache
+/// key alongside `"1970-79"`, and — for `set_cover`, which stores what it is
+/// given — a row that no lookup can ever match.
 pub fn validate_path(input: &str) -> Option<String> {
     if input.is_empty() {
         return Some(String::new());
@@ -19,7 +26,27 @@ pub fn validate_path(input: &str) -> Option<String> {
             Component::CurDir | Component::Normal(_) => {}
         }
     }
-    Some(input.to_string())
+    Some(normalize_rel_path(input))
+}
+
+/// Canonical form of an already-validated `/`-separated relative path: `.`
+/// segments and empty segments (from `//` or a trailing `/`) are dropped.
+///
+/// Only the separator is meaningful here, so a name such as `a..b` is left
+/// alone, and a backslash is an ordinary filename character on Unix rather than
+/// a separator. `..` is deliberately *not* resolved: it is rejected by
+/// [`validate_path`], and quietly folding it away here would turn a rejected
+/// traversal into a valid path if this were ever called without validating
+/// first.
+pub fn normalize_rel_path(input: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in input.split('/') {
+        match part {
+            "" | "." => {}
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
 }
 
 /// Why a client-supplied path could not be resolved to an album path.
@@ -110,7 +137,30 @@ mod tests {
         );
         // A doubledot *inside* a name is a normal character, not traversal.
         assert_eq!(validate_path("a..b/c"), Some("a..b/c".to_string()));
-        assert_eq!(validate_path("."), Some(".".to_string()));
+    }
+
+    #[test]
+    fn validate_path_normalises_accepted_paths() {
+        // Trailing and doubled separators, and `.` segments, all collapse.
+        assert_eq!(validate_path("1970-79/"), Some("1970-79".to_string()));
+        assert_eq!(validate_path("1970-79//"), Some("1970-79".to_string()));
+        assert_eq!(validate_path("./1970-79"), Some("1970-79".to_string()));
+        assert_eq!(validate_path("1970-79/./1970"), Some("1970-79/1970".to_string()));
+        assert_eq!(validate_path("."), Some(String::new()));
+        assert_eq!(validate_path("/"), None);
+        // A doubledot inside a name survives; only bare `..` segments are
+        // traversal.
+        assert_eq!(validate_path("a..b/c"), Some("a..b/c".to_string()));
+        // Spaces and trailing spaces are filename characters, not noise.
+        assert_eq!(validate_path("summer holiday "), Some("summer holiday ".to_string()));
+    }
+
+    #[test]
+    fn normalize_rel_path_is_idempotent() {
+        for input in ["", "a", "a/", "a//b", "./a", "a/./b", "a..b/c"] {
+            let once = normalize_rel_path(input);
+            assert_eq!(normalize_rel_path(&once), once, "not idempotent for {input:?}");
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, info, warn};
 
-use crate::{config::Config, db::Db, thumb, util};
+use crate::{config::Config, db::Db, db::PhotoMeta, thumb, util};
 
 /// Two samples of a file separated by this interval must be identical
 /// (size + mtime) for the file to be considered stable. 300 ms is long
@@ -24,6 +24,29 @@ const STABILITY_MAX_SAMPLES: u32 = 3;
 /// Grace window applied when a source file's mtime is in the future. See
 /// [`thumb_is_fresh`] for why such a timestamp cannot be trusted.
 const UNTRUSTED_MTIME_GRACE: Duration = Duration::from_secs(5);
+
+/// A file whose mtime is older than this cannot be an in-flight upload, so the
+/// stability sampling below is skipped for it.
+///
+/// On the initial scan of an existing library every file would otherwise pay
+/// the full 300 ms sample window before anything is generated, which on 8,000
+/// photos is over half an hour of pure sleeping. The gate stays in place for
+/// files that *could* still be arriving, and the `thumb_is_fresh` self-heal
+/// still repairs a thumbnail that was built from a partial file: a writer that
+/// copies in place (rather than renaming a completed temp file, as `rsync` and
+/// every upload tool this project documents does) leaves the source mtime newer
+/// than the thumbnail, so the final write event regenerates it.
+const STABILITY_SKIP_AGE: Duration = Duration::from_secs(5);
+
+/// Capacity of the job queue.
+///
+/// The queue was unbounded, which meant the initial scan of a large tree
+/// enqueued one job per media file — tens of thousands of `String` paths —
+/// before the worker had generated anything, and the only memory bound in the
+/// system was the pre-pass semaphore. A bounded queue makes the *producer*
+/// wait instead, which is the back-pressure the pre-pass comment describes but
+/// could not deliver while the channel itself accepted everything.
+const JOB_QUEUE_CAPACITY: usize = 1024;
 
 /// Upper bound on Create jobs whose stability pre-pass is running at once.
 ///
@@ -45,12 +68,25 @@ pub enum ThumbJob {
 }
 
 pub struct Worker {
-    pub tx: mpsc::UnboundedSender<ThumbJob>,
+    pub tx: mpsc::Sender<ThumbJob>,
+}
+
+/// Queue one job, waiting if the queue is full.
+///
+/// Every caller runs on a blocking thread or on `notify`'s own event thread,
+/// never on an async worker, so parking here is safe — and is the point: the
+/// bounded channel pushes back on the scan rather than growing without limit.
+/// A closed queue means the worker is gone, which only happens during shutdown;
+/// the next startup scan re-queues whatever was dropped.
+pub fn enqueue(tx: &mpsc::Sender<ThumbJob>, job: ThumbJob) {
+    if tx.blocking_send(job).is_err() {
+        debug!("Thumbnail worker has shut down; dropping a queued job");
+    }
 }
 
 impl Worker {
     pub fn spawn(config: Config, db: Arc<Db>) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<ThumbJob>();
+        let (tx, mut rx) = mpsc::channel::<ThumbJob>(JOB_QUEUE_CAPACITY);
         let root = config.album.root.clone();
 
         // Limit concurrent *generation* jobs to avoid exhausting RAM when
@@ -201,6 +237,18 @@ async fn await_stable(root: &Path, db: &Db, rel_path: &str) -> bool {
         return false;
     }
 
+    // A file whose mtime is already well in the past is not an upload in
+    // flight, so the sample window below would be pure latency. This is the
+    // difference between the first scan of an existing library finishing in
+    // minutes and it paying 300 ms of sleep per file. A source copied in place
+    // (rather than renamed into place) still self-heals: its mtime ends up
+    // newer than the thumbnail generated from the partial file.
+    if let Ok(age) = SystemTime::now().duration_since(file_mtime(&meta))
+        && age > STABILITY_SKIP_AGE
+    {
+        return true;
+    }
+
     let mut last = (meta.len(), file_mtime(&meta));
     for _ in 0..STABILITY_MAX_SAMPLES {
         tokio::time::sleep(STABILITY_INTERVAL).await;
@@ -279,16 +327,36 @@ fn thumb_is_fresh(root: &Path, rel_path: &str, src_mtime: SystemTime) -> bool {
 /// off as complete. Nothing else counts as incomplete — regenerating thumbnails
 /// to refresh a stale value would be far more expensive than the value is
 /// worth.
-fn metadata_incomplete(meta: Option<(u32, u32, Option<u64>, i64)>, fname: &str) -> bool {
+fn metadata_incomplete(meta: Option<PhotoMeta>, fname: &str) -> bool {
     match meta {
         None => true,
-        Some((_, _, duration, _)) => util::is_video_file(fname) && duration.is_none(),
+        // Whether a video has a duration is decided by `probed`, not by the
+        // duration being `None`. Containers exist that never expose a container
+        // duration (a streamed or linear-muxed Matroska/WebM write, which is
+        // what `ffmpeg -f matroska -` and some cameras produce), so treating
+        // `None` as "needs work" meant probing such a file forever: on every
+        // startup, on every scan, and again on every unrelated event for that
+        // folder. `probed` records that a probe ran and its answer was stored,
+        // so the row settles after one attempt — while rows written before the
+        // column existed still get their one repair pass.
+        Some(meta) => {
+            let _ = meta.duration;
+            util::is_video_file(fname) && !meta.probed
+        }
     }
 }
 
 /// Portable mtime accessor (`modified()` works on all supported platforms).
 fn file_mtime(meta: &std::fs::Metadata) -> SystemTime {
     meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// A probed duration, in whole seconds, never zero.
+///
+/// The frontend treats `0` as "unknown" (it is falsy), so a clip shorter than
+/// half a second would silently lose its duration badge.
+fn whole_seconds(duration_secs: f64) -> u64 {
+    (duration_secs.round() as u64).max(1)
 }
 
 /// CPU-bound part of a Create job, run on a blocking thread while holding a
@@ -335,7 +403,7 @@ fn process_create(root: &Path, db: &Db, rel_path: &str) {
         match thumb::generate_image_thumb(&src, &thumb_path) {
             Ok((w, h)) => {
                 let modified = get_mtime(&src);
-                let _ = db.set_metadata(rel_path, w, h, None, modified);
+                let _ = db.set_metadata(rel_path, w, h, None, modified, true);
             }
             Err(e) => {
                 warn!("Failed to generate image thumb for {}: {}", rel_path, e);
@@ -347,13 +415,18 @@ fn process_create(root: &Path, db: &Db, rel_path: &str) {
         let info = thumb::probe_video(&src);
         match thumb::generate_video_thumb(&src, &thumb_path, info.and_then(|i| i.duration_secs)) {
             Ok(()) => {
+                // `info` is `None` when `ffprobe` could not answer at all
+                // (missing binary, unreadable container). The row is then left
+                // unwritten, so the file stays "unprobed" and is retried once
+                // the tool is available rather than being written off.
                 if let Some(info) = info {
                     let _ = db.set_metadata(
                         rel_path,
                         info.width,
                         info.height,
-                        info.duration_secs.map(|d| d.round() as u64),
+                        info.duration_secs.map(whole_seconds),
                         get_mtime(&src),
+                        true,
                     );
                 }
             }
@@ -411,7 +484,7 @@ fn update_metadata(_root: &Path, db: &Db, rel_path: &str, src: &Path) {
         // Header read plus EXIF orientation, not a full decode: this path runs
         // for photos whose thumbnail is already current.
         if let Some((w, h)) = thumb::oriented_dimensions(src) {
-            let _ = db.set_metadata(rel_path, w, h, None, modified);
+            let _ = db.set_metadata(rel_path, w, h, None, modified, true);
         }
     } else if util::is_video_file(&fname)
         && let Some(info) = thumb::probe_video(src)
@@ -420,22 +493,28 @@ fn update_metadata(_root: &Path, db: &Db, rel_path: &str, src: &Path) {
             rel_path,
             info.width,
             info.height,
-            info.duration_secs.map(|d| d.round() as u64),
+            info.duration_secs.map(whole_seconds),
             modified,
+            true,
+        );
+    } else if util::is_video_file(&fname) {
+        warn!(
+            "Could not probe {}: ffprobe produced nothing, leaving the row unprobed",
+            rel_path
         );
     }
 }
 
-fn get_mtime(path: &Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+/// The same instant [`get_mtime`] records, taken from metadata already in hand.
+fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
+    file_mtime(meta).duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
 }
 
-pub fn scan_existing(root: &Path, db: &Db, tx: &mpsc::UnboundedSender<ThumbJob>) {
+fn get_mtime(path: &Path) -> i64 {
+    std::fs::metadata(path).map(|m| mtime_secs(&m)).unwrap_or(0)
+}
+
+pub fn scan_existing(root: &Path, db: &Db, tx: &mpsc::Sender<ThumbJob>) {
     let _ = walk_dir(root, PathBuf::new(), db, tx);
 }
 
@@ -445,7 +524,7 @@ pub fn scan_existing(root: &Path, db: &Db, tx: &mpsc::UnboundedSender<ThumbJob>)
 /// folder itself as one event and says nothing about its contents, so the
 /// subtree has to be enumerated for its media files to be picked up at all.
 /// Without this they stayed thumbnail-less until the service was restarted.
-pub fn scan_subtree(root: &Path, rel: &str, db: &Db, tx: &mpsc::UnboundedSender<ThumbJob>) {
+pub fn scan_subtree(root: &Path, rel: &str, db: &Db, tx: &mpsc::Sender<ThumbJob>) {
     // Never descend into a thumbnails folder; doing so would generate a second
     // generation of thumbnails inside it.
     if rel.is_empty() || rel.split('/').any(|part| part == "thumbs") {
@@ -461,7 +540,7 @@ fn walk_dir(
     root: &Path,
     rel: PathBuf,
     db: &Db,
-    tx: &mpsc::UnboundedSender<ThumbJob>,
+    tx: &mpsc::Sender<ThumbJob>,
 ) -> anyhow::Result<()> {
     // Iterative DFS to avoid unbounded recursion on deeply nested folder trees.
     let mut stack = vec![rel];
@@ -521,6 +600,14 @@ fn walk_dir(
                     stack.push(sub_rel);
                 }
             } else if util::is_media_file(&name_str) {
+                // A symlink whose target is gone can never be thumbnailed or
+                // served, but it still carries a media extension. Without this
+                // check it is re-queued on every scan for the life of the
+                // service, since `thumb_is_fresh` can never become true for it.
+                // Only symlinks need the extra `stat`.
+                if is_symlink && std::fs::metadata(entry.path()).is_err() {
+                    continue;
+                }
                 let meta = match entry.metadata() {
                     Ok(m) => m,
                     Err(e) => {
@@ -541,10 +628,66 @@ fn walk_dir(
                 // nothing.
                 let fresh = thumb_is_fresh(root, &rel_str, file_mtime(&meta));
                 if !fresh || metadata_incomplete(db.get_metadata(&rel_str), &name_str) {
-                    let _ = tx.send(ThumbJob::Create { rel_path: rel_str });
+                    enqueue(tx, ThumbJob::Create { rel_path: rel_str });
                 }
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::PhotoMeta;
+
+    fn meta(duration: Option<u64>, probed: bool) -> Option<PhotoMeta> {
+        Some(PhotoMeta { width: 1920, height: 1080, duration, modified: 1, probed })
+    }
+
+    #[test]
+    fn a_video_is_only_reprobed_until_a_probe_has_answered() {
+        // No row at all: there is everything to learn, so it needs work.
+        assert!(metadata_incomplete(None, "a.mp4"));
+
+        // A legacy row (written before the column existed) is re-probed once.
+        assert!(metadata_incomplete(meta(None, false), "a.mp4"));
+
+        // A probed row is finished with, whether or not the container exposed a
+        // duration. This is the case that used to be re-probed forever.
+        assert!(!metadata_incomplete(meta(None, true), "a.mp4"));
+        assert!(!metadata_incomplete(meta(Some(90), true), "a.mp4"));
+
+        // Images have no probe step; an existing row is complete.
+        assert!(!metadata_incomplete(meta(None, false), "a.jpg"));
+    }
+
+    #[test]
+    fn durations_round_but_never_to_zero() {
+        assert_eq!(whole_seconds(0.4), 1, "the frontend treats 0 as unknown");
+        assert_eq!(whole_seconds(0.0), 1);
+        assert_eq!(whole_seconds(0.6), 1);
+        assert_eq!(whole_seconds(90.4), 90);
+    }
+
+    /// `enqueue` parks when the queue is full, so the assumption that it is safe
+    /// to call from the blocking contexts this project uses has to hold: a panic
+    /// here would abort the scan or the watcher thread. Nothing else asserts it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enqueue_parks_from_a_blocking_thread_instead_of_panicking() {
+        let (tx, mut rx) = mpsc::channel::<ThumbJob>(1);
+        // Fill the queue so the send below must wait for space.
+        tx.try_send(ThumbJob::Delete { rel_path: "a.jpg".into() }).unwrap();
+
+        let sender = tx.clone();
+        let sender_task = tokio::task::spawn_blocking(move || {
+            enqueue(&sender, ThumbJob::Delete { rel_path: "b.jpg".into() });
+            "sent"
+        });
+
+        // Draining releases the parked sender.
+        assert!(rx.recv().await.is_some());
+        assert!(rx.recv().await.is_some());
+        assert_eq!(sender_task.await.unwrap(), "sent");
+    }
 }

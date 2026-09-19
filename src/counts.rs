@@ -158,37 +158,8 @@ fn count_subtree(root: &Path, folder: &str) -> HashMap<String, Counts> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempTree;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicU32;
-
-    static SEQ: AtomicU32 = AtomicU32::new(0);
-
-    /// A unique temporary directory, removed on drop.
-    struct TempTree(PathBuf);
-
-    impl TempTree {
-        fn new() -> Self {
-            let n = SEQ.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!(
-                "simplealbum-counts-{}-{n}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            TempTree(dir)
-        }
-
-        fn file(&self, rel: &str) {
-            let path = self.0.join(rel);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, b"x").unwrap();
-        }
-    }
-
-    impl Drop for TempTree {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn tree() -> (PathBuf, TempTree) {
         let t = TempTree::new();

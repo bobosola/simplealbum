@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::counts::CountCache;
+use crate::covers::CoverCache;
 use crate::db::Db;
 use crate::worker::{self, ThumbJob};
 
@@ -17,8 +18,9 @@ use crate::worker::{self, ThumbJob};
 pub fn start(
     album_root: &Path,
     db: Arc<Db>,
-    tx: mpsc::UnboundedSender<ThumbJob>,
+    tx: mpsc::Sender<ThumbJob>,
     counts: Arc<CountCache>,
+    covers: Arc<CoverCache>,
 ) -> anyhow::Result<RecommendedWatcher> {
     let root = album_root.to_path_buf();
     let handle = tokio::runtime::Handle::current();
@@ -55,15 +57,24 @@ pub fn start(
                 };
                 let rel_str = rel.replace('\\', "/");
                 if is_thumbs(&rel_str) {
+                    // A generated or deleted thumbnail can turn a cover-less
+                    // folder into a resolvable one (or back), and it never
+                    // changes a photo or album count. Only the cover cache is
+                    // dropped here — invalidating the count cache on every
+                    // thumbnail would force a full re-walk of the tree after
+                    // each one the worker writes.
+                    covers.invalidate();
                     continue;
                 }
                 match event.kind {
                     notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {
-                        // Any add, rename or content change can alter counts, so
-                        // drop the cached ones. Cheap: a single atomic bump.
+                        // Any add, rename or content change can alter counts and
+                        // covers, so drop the cached ones. Cheap: a couple of
+                        // atomic bumps.
                         counts.invalidate();
+                        covers.invalidate();
                         if path.is_file() {
-                            let _ = tx.send(ThumbJob::Create { rel_path: rel_str });
+                            worker::enqueue(&tx, ThumbJob::Create { rel_path: rel_str });
                         } else if path.is_dir() {
                             // A folder moved or copied into the album is reported
                             // as one event for the folder; its files are not
@@ -85,7 +96,7 @@ pub fn start(
                             // rows were orphaned forever. The worker decides
                             // which case it is (it can check the name), so a
                             // vanished non-media path is harmless here.
-                            let _ = tx.send(ThumbJob::Delete { rel_path: rel_str });
+                            worker::enqueue(&tx, ThumbJob::Delete { rel_path: rel_str });
                         }
                     }
                     // `IN_CLOSE_WRITE` (and its equivalents) is the "this file
@@ -99,14 +110,16 @@ pub fn start(
                         notify::event::AccessMode::Write,
                     )) => {
                         if path.is_file() {
-                            let _ = tx.send(ThumbJob::Create { rel_path: rel_str });
+                            covers.invalidate();
+                            worker::enqueue(&tx, ThumbJob::Create { rel_path: rel_str });
                         }
                     }
                     notify::EventKind::Remove(_) => {
                         // May be a single file or a whole folder; the worker
                         // distinguishes the two cases itself.
                         counts.invalidate();
-                        let _ = tx.send(ThumbJob::Delete { rel_path: rel_str });
+                        covers.invalidate();
+                        worker::enqueue(&tx, ThumbJob::Delete { rel_path: rel_str });
                     }
                     _ => {}
                 }
@@ -132,7 +145,7 @@ fn scan_folder(
     handle: &tokio::runtime::Handle,
     root: &Path,
     db: &Arc<Db>,
-    tx: &mpsc::UnboundedSender<ThumbJob>,
+    tx: &mpsc::Sender<ThumbJob>,
     scanning: &Arc<Mutex<HashSet<String>>>,
     rel: String,
 ) {

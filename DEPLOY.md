@@ -146,16 +146,29 @@ sudo systemctl start album-service
 sudo journalctl -u album-service -n 20 --no-pager
 ```
 
-Startup runs the migration: `ALTER TABLE photo_metadata ADD COLUMN duration` and
-the removal of two indexes that duplicated the primary keys. A clean start with
-no errors is all you should see. Nothing else in the database needs attention;
-the existing `folder_covers` rows and thumbnail files are used as they are.
+Startup runs the migrations: `ALTER TABLE photo_metadata ADD COLUMN duration`,
+`ALTER TABLE photo_metadata ADD COLUMN probed`, and the removal of two indexes
+that duplicated the primary keys. A clean start with no errors is all you should
+see. Thumbnail files are used as they are.
+
+Two things about `folder_covers` are worth knowing on the first start:
+
+- Rows whose paths were stored un-normalised by an older build (a target like
+  `"1980-89/"`, or an image like `"./1980-89/a.jpg"`) are rewritten once into
+  their canonical form, because no lookup could ever have matched them. You will
+  see `Repaired N stored folder cover(s) whose paths were not in canonical
+  form`; `N` is normally `0`.
+- Every *video* row is probed once more, because `probed` starts at `0` for rows
+  that predate the column. That is what repairs durations recorded by builds
+  that could not store them, and it is why a video whose container exposes no
+  duration at all stops being re-probed forever.
 
 ### 5. Optional: correct metadata written by the old build
 
 Two consequences of the old build are deliberately *not* repaired automatically,
-because the repair path only refills rows that are missing. Both are cosmetic,
-and both are worth fixing only if they bother you:
+because the repair path only refills rows that are missing or rows whose `probed`
+flag is unset (which is what forces the one-time re-probe of every video row).
+Both are cosmetic, and both are worth fixing only if they bother you:
 
 **Portrait photos show swapped dimensions.** Rows written by the old build hold
 the unrotated (landscape) width and height for photos whose EXIF orientation is
@@ -185,7 +198,8 @@ sudo systemctl restart album-service
 ### What the upgrade fixes, so you can confirm it worked
 
 - Videos show a duration next to their dimensions (previously never displayed,
-  because the value was hardcoded to zero).
+  because the value was hardcoded to zero), and a clip of less than half a second
+  shows `0:01` rather than nothing.
 - Portrait photos processed after the upgrade report their displayed dimensions,
   not the stored ones.
 - Thumbnails of PNG and WebP sources are genuinely PNG and WebP.

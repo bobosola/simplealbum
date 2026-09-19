@@ -194,7 +194,7 @@ Photographs are normally added by copying files into the tree (rsync, scp, rclon
 
 Three mechanisms cooperate to make this class of bug impossible in the steady state:
 
-1. **Stability sampling (async pre-pass).** Before a job may touch a worker, an async task samples the file's *size and mtime*, waits ~300 ms, and re-samples; a file that is actively being written shows a change, so sampling repeats until the file goes quiet (up to 3 samples, then the job defers). Both size and mtime are compared because some copy/upload tools pre-allocate the full file size up front, which a size-only check would miss. The pre-pass runs as lightweight per-job async tasks, so hundreds of in-flight uploads wait out their writes **in parallel** without occupying worker slots; the number of tasks is capped, and once the cap is reached the consumer stops draining the queue, so the first scan of a huge tree cannot spawn thousands of tasks at once. The final `Modify` event fired when a write completes re-triggers any deferred job. A fixed delay is deliberately *not* used: slow uploads, network stalls, or backlog queue time can exceed any fixed value.
+1. **Stability sampling (async pre-pass).** Before a job may touch a worker, an async task samples the file's *size and mtime*, waits ~300 ms, and re-samples; a file that is actively being written shows a change, so sampling repeats until the file goes quiet (up to 3 samples, then the job defers). Both size and mtime are compared because some copy/upload tools pre-allocate the full file size up front, which a size-only check would miss. The pre-pass runs as lightweight per-job async tasks, so hundreds of in-flight uploads wait out their writes **in parallel** without occupying worker slots; the number of tasks is capped, and once the cap is reached the consumer stops draining the queue, so the first scan of a huge tree cannot spawn thousands of tasks at once. A file whose mtime is already minutes or hours old cannot be an upload in flight, so it skips the sample window entirely — otherwise the first scan of an existing library would spend 300 ms of sleep per file, over half an hour on 8,000 photos. The final `Modify` event fired when a write completes re-triggers any deferred job. A fixed delay is deliberately *not* used: slow uploads, network stalls, or backlog queue time can exceed any fixed value.
 2. **mtime-based staleness (self-healing).** A thumbnail is considered stale when the source's mtime is newer than the thumbnail's mtime, and stale thumbnails are regenerated. If the stability check ever loses the race (e.g. an upload pauses mid-file long enough to look stable), the final write event marks the bad thumbnail stale and repairs it within a second. The startup scan applies the same check, so corrupt thumbnails left behind by an older version of the service are all repaired on the next restart.
 3. **Atomic, collision-free writes.** Thumbnails are written to a unique hidden temp file (`.7.photo_thumb.jpg.tmp`) and renamed into place, so a crash or a duplicate concurrent job can never leave a partially written thumbnail or rename the temp file out from under its sibling job.
 
@@ -202,9 +202,9 @@ The residual risk is bounded and self-correcting: at worst one bad thumbnail exi
 
 ### Resource Protection & Limits
 
-The service is designed to accept **unlimited** upload volumes (bounded only by disk space) without failing itself or degrading other services such as the web server. Uploads that back up only add queue latency; nothing in the design scales resource use with queue depth.
+The service is designed to accept **unlimited** upload volumes (bounded only by disk space) without failing itself or degrading other services such as the web server. Uploads that back up add queue latency and occupy the bounded job queue, but never add concurrent decodes.
 
-- **Bounded memory via the worker count.** Each generation job can hold one full decoded frame in RAM (a 24 MP photo decodes to ~72 MB), so total memory use is bounded by `[worker] threads`, never by the number of queued files or in-flight uploads. Measured peak RSS: ~200 MB at 2 workers (24 MP photos), ~460 MB at 8 workers (12 MP), ~790 MB at 8 workers (24 MP); idle is ~10 MB. Queued jobs are small strings; the async pre-pass tasks are coroutines, not OS threads, and their number is capped independently of the queue depth. This count is the service's single memory lever: small servers pin a low value and keep a modest `MemoryMax`; larger machines leave it at `0` (auto).
+- **Bounded memory via the worker count.** Each generation job can hold one full decoded frame in RAM (a 24 MP photo decodes to ~72 MB), so total memory use is bounded by `[worker] threads`, never by the number of queued files or in-flight uploads. Measured peak RSS: ~200 MB at 2 workers (24 MP photos), ~460 MB at 8 workers (12 MP), ~790 MB at 8 workers (24 MP); idle is ~10 MB. The job queue is bounded too: the initial scan and the watcher *park* when it is full rather than growing a list of tens of thousands of paths, so a large backlog adds latency (and briefly delays watcher events, which are re-derived by the next scan or event) but never memory. The pre-pass tasks are coroutines, not OS threads, and their number is capped independently of the queue depth. This count is the service's single memory lever: small servers pin a low value and keep a modest `MemoryMax`; larger machines leave it at `0` (auto).
 - **Bounded CPU via `CPUQuota`.** Under systemd the unit caps total CPU (e.g. `CPUQuota=150%` on a 2-core box: bursts get nearly the whole machine, but other services are guaranteed the rest). Thumbnail bursts therefore finish more slowly under quota rather than starving Caddy or system processes; after a burst the service idles at ~0% CPU.
 - **Bounded tasks via `TasksMax`.** The service's OS thread count plus any FFmpeg child processes stays well under the limit (measured peak ~33 with 8 workers on video-heavy input; ~20 at 2 workers); `TasksMax=50` leaves comfortable headroom.
 - **`MemoryMax` sizing per server class.** Default unit: `MemoryMax=1G` (covers 8 workers on 24 MP photos). Small servers (≤4 cores, auto workers ≤ 4): `[worker] threads = 2` (or leave auto) with `MemoryMax=512M`. The two knobs trade off against each other — operators raise one or lower the other.
@@ -303,10 +303,10 @@ Response `200 OK`:
 }
 ```
 
-- `folders`: subdirectories that themselves contain photos or other folders, sorted by folder name.
-- `photos`: direct media files in this folder (images and videos), sorted by filename.
+- `folders`: subdirectories that themselves contain photos or other folders, sorted by folder name. A directory reached through a symlink is not listed (see [Symbolic Links](#symbolic-links)).
+- `photos`: direct media files in this folder (images and videos), sorted by filename. A symlink whose target no longer exists is not listed.
   - `type`: `"image"` or `"video"`.
-  - `duration`: present only for videos, integer seconds.
+  - `duration`: present only for videos, integer seconds, and never `0` — rounded to whole seconds with a floor of 1, so a sub-half-second clip still shows a duration. Absent while the file has not been probed yet, and omitted entirely for a video whose container exposes no duration.
 - `cover`: the chosen thumbnail for the folder, as a path **relative to that folder** — so `"thumbs/beach_thumb.jpg"` when the source photo sits in the folder itself, or `"1981/thumbs/beach_thumb.jpg"` when it sits in a subfolder. Falls back recursively: first photo in the folder itself, then the first photo in the first child folder, then the first photo in the first grandchild folder. If no thumbnail exists anywhere in the subtree, the frontend displays a static muted placeholder.
 
 #### `POST /api/cover`
@@ -324,6 +324,11 @@ Body:
 
 - `image_path`: relative path to the image within the album root.
 - `targets`: array of folder paths to set this image as the cover for. An empty string `""` represents the album root. Each target must be a valid parent folder of the image (the backend validates this).
+
+Both are normalised before being stored: a trailing slash (`"1980-89/"`), a doubled
+slash or a leading `./` is folded away, so the stored key is the same one a
+listing looks up. (Storing the request string verbatim meant such a request
+answered `204` while the cover never appeared.)
 
 Response `204 No Content`.
 
@@ -518,9 +523,18 @@ CREATE TABLE photo_metadata (
     width      INTEGER,                -- display dimensions, i.e. after EXIF orientation
     height     INTEGER,
     duration   INTEGER,                -- seconds, videos only
-    modified   INTEGER NOT NULL        -- source file mtime for cache invalidation
+    modified   INTEGER NOT NULL,       -- source file mtime for cache invalidation
+    probed     INTEGER NOT NULL DEFAULT 0  -- a probe ran and its result was stored
 );
 ```
+
+`probed` is what distinguishes *"this container genuinely carries no duration"*
+from *"this row was written before durations were recorded"*. It can only be
+`0` for rows inherited from an older build, which are re-probed exactly once
+after the upgrade; without it, a video whose container exposes no duration was
+re-probed on every scan, forever. The column is also left unset when `ffprobe`
+cannot answer at all (missing binary, unreadable container), so installing
+FFmpeg later repairs those rows on the next scan.
 
 No secondary indexes are declared: `folder_path` and `photo_path` are primary
 keys, so SQLite already maintains a unique index for each, and a duplicate index
@@ -530,10 +544,12 @@ on the same column would only cost write time and disk.
 
 ### Caching Strategy
 
-- **Folder listings**: Built directly from the filesystem, but on a blocking thread (`spawn_blocking`) so that a large folder cannot occupy an async runtime worker and stall unrelated requests such as `/api/health`. The directory entries themselves are always read fresh, which keeps the file list consistent without invalidation logic. The recursive photo/album count needed for each subfolder's badge *is* cached in memory: one depth-first pass records the counts for every folder it visits, and the filesystem watcher drops the whole cache on any change (a single atomic generation bump). Descending a level therefore does not re-walk the same subtrees, and a browse after an edit is never stale. Each folder's cover is resolved by looking for a thumbnail in that folder and its immediate children.
-- **Image dimensions**: Read from the `photo_metadata` SQLite table. The background thumbnail worker populates this cache as it processes images; a row that is missing, or is a video row with no duration, is also repaired from the file header without regenerating the thumbnail. If a file's `mtime` has changed since the cached `modified` value, the worker re-reads dimensions and updates the row.
+- **Folder listings**: Built directly from the filesystem, but on a blocking thread (`spawn_blocking`) so that a large folder cannot occupy an async runtime worker and stall unrelated requests such as `/api/health`. The directory entries themselves are always read fresh, which keeps the file list consistent without invalidation logic. Two things *are* cached, because both cost a walk of the tree or of a subtree:
+  - **Recursive photo/album counts** for each subfolder's badge: one depth-first pass records the counts for every folder it visits, and the filesystem watcher drops the whole cache on any change (a single atomic generation bump). Descending a level therefore does not re-walk the same subtrees, and a browse after an edit is never stale.
+  - **Computed covers**: resolving a folder that has no stored cover searches that folder, its children and its grandchildren for a usable thumbnail, which is O(N·M) `read_dir` calls for a folder of N subfolders with M children each — once per subfolder, on every request, including the unauthenticated `/api/share`. The result is memoised and dropped on any change the watcher reports, *including* changes inside a `thumbs` folder (a newly generated thumbnail is exactly what makes a cover-less folder resolvable) and by `set_cover` (which changes the answer without touching the filesystem).
+- **Image dimensions**: Read from the `photo_metadata` SQLite table. The background thumbnail worker populates this cache as it processes images; a row that is missing, or is a video row that has never been probed, is also repaired from the file header without regenerating the thumbnail. If a file's `mtime` has changed since the cached `modified` value, the worker re-reads dimensions and updates the row.
 - **Thumbnails**: Served directly by Caddy as static files — no API involvement.
-- **In-memory LRU**: Only folder *counts* are cached, not listings; listings are cheap enough to read fresh and doing so avoids an invalidation surface for the part users actually see.
+- **In-memory LRU**: Listings themselves are not cached — they are cheap to read fresh, and doing so avoids an invalidation surface for the part users actually see. Counts and computed covers are (see above); both are bounded in size and dropped wholesale on the watcher's generation bump.
 
 ---
 
@@ -685,7 +701,7 @@ For defence in depth, the backend also validates the `Origin` header on POST req
 
 ### Symbolic Links
 
-Symlinked **directories** inside the album tree are listed but never traversed: the recursive scan, the subtree count, and the cover search all read the entry type with `file_type()`, which reports a symlink as a symlink rather than what it points at. Following them would allow a self-referential link (`album/loop → album`) to walk forever — in the API's case while holding the blocking thread a request is waiting on — and would let a link to `/` pull unrelated files into the album's thumbnail queue. Symlinked **files** are still processed, since a link to a photo is a reasonable way to include one. The consequence to know about: a folder that exists only as a symlink is shown without counts or covers.
+Symlinked **directories** inside the album tree are never traversed *or listed*: the recursive scan, the subtree count, the cover search and the folder listing all read the entry type with `file_type()`, which reports a symlink as a symlink rather than what it points at. Following them would allow a self-referential link (`album/loop → album`) to walk forever — in the API's case while holding the blocking thread a request is waiting on — and would let a link to `/` pull unrelated files into the album's thumbnail queue. A symlinked directory is not offered in the listing either, because the folder it names would then be one the worker refuses to populate: it would show a permanent placeholder. Symlinked **files** are still processed, since a link to a photo is a reasonable way to include one; a symlink whose target is gone is skipped rather than listed, because nothing can ever render it.
 
 ### Malicious File DoS
 

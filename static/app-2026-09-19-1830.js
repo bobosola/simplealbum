@@ -150,7 +150,7 @@ function renderGrid() {
             </div>
             <div class="info">
                 <div class="name">${escapeHtml(photo.name)}</div>
-                <div class="counts">${photo.width || 0}x${photo.height || 0}${isVideo && photo.duration ? ' &middot; ' + formatDuration(photo.duration) : ''}</div>
+                <div class="counts">${photo.width || 0}x${photo.height || 0}${isVideo && photo.duration != null ? ' &middot; ' + formatDuration(photo.duration) : ''}</div>
             </div>
         `;
         card.addEventListener('click', (e) => {
@@ -374,6 +374,15 @@ function photoMediaUrl(photo) {
     return `${window.location.origin}${photoUrl(photo.name)}`;
 }
 
+// Absolute URL of a still image representing `photo`, for share targets that
+// only accept an image. For a video that is its generated poster frame — the
+// video's own URL is not an image and Pinterest rejects it. Absolute, because
+// Pinterest fetches it from its own servers.
+function photoShareImageUrl(photo) {
+    const rel = photo.type === 'video' ? photo.thumb : photo.name;
+    return `${window.location.origin}${photoUrl(rel)}`;
+}
+
 function platformShareUrl(id, target) {
     const url = encodeURIComponent(target.url);
     const text = encodeURIComponent(target.text);
@@ -482,10 +491,13 @@ function shareFolder() {
 
 function sharePhoto() {
     const photo = currentAlbum.photos[currentViewerIndex];
+    // Defensive: the button only exists inside the viewer, but a stale index
+    // (the photo was deleted on another device) must not throw here.
+    if (!photo) return;
     openShareSheet({
         url: shareUrl(currentPath, photo.name),
         // Pinterest wants a direct image file; the share page is HTML.
-        imageUrl: photoMediaUrl(photo),
+        imageUrl: photoShareImageUrl(photo),
         text: shareText(photo.name),
         label: photo.name,
     });

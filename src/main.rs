@@ -1,12 +1,16 @@
 mod api;
 mod config;
 mod counts;
+mod covers;
 mod db;
 mod models;
 mod thumb;
 mod util;
 mod watcher;
 mod worker;
+
+#[cfg(test)]
+mod testutil;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,6 +26,7 @@ use crate::{
     api::{AppState, get_album, health, set_cover, share_page},
     config::Config,
     counts::CountCache,
+    covers::CoverCache,
     db::Db,
     worker::{scan_existing, Worker},
 };
@@ -80,11 +85,26 @@ async fn main() -> anyhow::Result<()> {
     check_media_tools();
 
     let db = Arc::new(Db::open(&cfg.state.db_path)?);
+
+    // Repair cover rows whose paths were stored un-normalised by an earlier
+    // build, which no lookup could ever match. One read of a tiny table on a
+    // clean database.
+    match db.normalize_stored_paths() {
+        Ok(0) => {}
+        Ok(n) => info!(
+            "Normalised {n} stored folder cover path(s) that no lookup could have matched"
+        ),
+        Err(e) => warn!("Could not normalise stored cover paths: {e}"),
+    }
+
     let worker = Worker::spawn(cfg.clone(), db.clone());
 
     // Recursive folder counts are cached here and invalidated by the watcher on
     // every change, so a browse does not re-walk the tree at each level.
     let counts = Arc::new(CountCache::new());
+    // Computed covers are cached for the same reason: resolving one walks up to
+    // three directory levels, once per subfolder, on every request.
+    let covers = Arc::new(CoverCache::new());
 
     // The watcher is started *before* the initial scan, not after. The scan can
     // take a while on a large tree, and anything added while it runs would
@@ -94,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         worker.tx.clone(),
         counts.clone(),
+        covers.clone(),
     )?;
 
     // The scan then runs on a blocking thread rather than inline: it walks the
@@ -115,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         config: cfg.clone(),
         db,
         counts,
+        covers,
     });
 
     let app = Router::new()
@@ -130,7 +152,48 @@ async fn main() -> anyhow::Result<()> {
     })?;
     info!("API server listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // Without this, SIGTERM (which is how systemd stops the service) killed the
+    // process mid-request and mid-write. Pending thumbnail jobs are still lost,
+    // but they are re-queued by the next startup scan.
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    let queued = worker.tx.max_capacity() - worker.tx.capacity();
+    if queued > 0 {
+        info!(
+            "Stopped with {} queued thumbnail job(s); the next startup scan re-queues them",
+            queued
+        );
+    }
 
     Ok(())
+}
+
+/// Resolve when the process is asked to stop, so in-flight requests can finish.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(e) => {
+                warn!("Could not install a SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("Shutdown requested (interrupt); finishing in-flight requests"),
+        _ = terminate => info!("Shutdown requested (SIGTERM); finishing in-flight requests"),
+    }
 }

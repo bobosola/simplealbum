@@ -176,23 +176,6 @@ pub fn generate_image_thumb(src: &Path, dst: &Path) -> anyhow::Result<(u32, u32)
     // Atomic write: temp file then rename so a crash never leaves a partial thumb.
     let tmp = tmp_path(dst);
     thumb.save_with_format(&tmp, format)?;
-
-    // Sanity check for JPEG output only: a 400x300 JPEG should not be under 1KB,
-    // so anything smaller means the decoder produced garbage pixels (e.g. solid
-    // grey). Lossless formats compress flat or tiny images below that threshold
-    // legitimately, so applying the check to them would cause false failures.
-    if format == image::ImageFormat::Jpeg
-        && let Ok(meta) = std::fs::metadata(&tmp)
-        && meta.len() < 1024
-    {
-        let _ = std::fs::remove_file(&tmp);
-        anyhow::bail!(
-            "Generated thumbnail is suspiciously small ({} bytes) — probable decoder failure. Source: {}",
-            meta.len(),
-            src.display()
-        );
-    }
-
     std::fs::rename(&tmp, dst)?;
 
     Ok((width, height))
@@ -335,10 +318,28 @@ pub fn generate_video_thumb(
 
     // Paths are passed as `OsStr` arguments rather than `to_str().unwrap()`: a
     // filename that is not valid UTF-8 used to panic the worker thread.
+    //
+    // The frame is scaled by ffmpeg rather than afterwards in Rust. Extracting
+    // at source resolution meant writing (and then decoding) a full-size frame —
+    // ~25 MB of decoded pixels for a 4K clip — purely to shrink it to 400 px.
+    // `min(iw,400)`/`min(ih,400)` with `force_original_aspect_ratio=decrease`
+    // fits the frame inside 400x400 without ever *up*scaling a small video, and
+    // it matches what the Rust resize below produces, so that pass is now only a
+    // fallback for an ffmpeg whose scale filter is unavailable.
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-ss", seek_arg.as_str(), "-i"])
         .arg(src)
-        .args(["-vframes", "1", "-q:v", "2", "-f", "image2", "-y"])
+        .args([
+            "-vframes",
+            "1",
+            "-vf",
+            "scale=w='min(iw,400)':h='min(ih,400)':force_original_aspect_ratio=decrease",
+            "-q:v",
+            "2",
+            "-f",
+            "image2",
+            "-y",
+        ])
         .arg(&tmp);
 
     let output = run_with_timeout(&mut cmd, EXTRACT_TIMEOUT)?;
@@ -349,13 +350,21 @@ pub fn generate_video_thumb(
         anyhow::bail!("ffmpeg failed: {}", stderr);
     }
 
-    // Resize the extracted frame to max 400px
-    if let Ok(img) = image::open(&tmp) {
-        let (w, h) = img.dimensions();
-        if w > THUMB_MAX_DIM || h > THUMB_MAX_DIM {
-            let thumb = img.resize(THUMB_MAX_DIM, THUMB_MAX_DIM, FilterType::Lanczos3);
-            thumb.save_with_format(&tmp, image::ImageFormat::Jpeg)?;
-        }
+    // Shrink the extracted frame if it is still oversized, and fail the job if it
+    // cannot be decoded at all: renaming an undecodable frame into place would
+    // install a thumbnail that can never be displayed and would look fresh to
+    // `thumb_is_fresh`, so it would never be repaired.
+    //
+    // The format is guessed from the file's *contents*, not its name: the frame
+    // sits in a hidden temp file whose extension is `.tmp`, and `image::open`
+    // decides the decoder from the extension alone. (Previously this call was
+    // wrapped in `if let Ok(..)`, so it failed on every video and the resize
+    // silently never happened — leaving full-resolution posters as thumbnails.)
+    let img = image::ImageReader::open(&tmp)?.with_guessed_format()?.decode()?;
+    let (w, h) = img.dimensions();
+    if w > THUMB_MAX_DIM || h > THUMB_MAX_DIM {
+        let thumb = img.resize(THUMB_MAX_DIM, THUMB_MAX_DIM, FilterType::Lanczos3);
+        thumb.save_with_format(&tmp, image::ImageFormat::Jpeg)?;
     }
 
     std::fs::rename(&tmp, dst)?;
@@ -504,3 +513,59 @@ mod tests {
         assert!(err.to_string().contains("timeout"), "unexpected error: {err}");
     }
 }
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use crate::testutil::TempTree;
+
+    /// A low-detail image is not a decoder failure.
+    ///
+    /// The old code rejected any JPEG thumbnail under 1 KB as "probable decoder
+    /// failure". Measured with this crate's encoder, a flat image produces a
+    /// thumbnail of 628 B at 8x8, 922 B at 100x100 and 1458 B at 200x150 — so
+    /// every small or flat image (icon, logo, avatar, diagram, QR code) was
+    /// rejected, deleted, and re-queued on every scan, forever, while the folder
+    /// showed a placeholder.
+    #[test]
+    fn a_flat_or_small_image_still_produces_a_thumbnail() {
+        let tree = TempTree::new();
+        for (size, flat) in [(8u32, true), (100, true), (400, true), (200, false)] {
+            let (w, h) = if flat { (size, size) } else { (size, size - 50) };
+            let src = tree.path(&format!("flat_{w}x{h}.jpg"));
+            image::RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255]))
+                .save_with_format(&src, image::ImageFormat::Jpeg)
+                .unwrap();
+
+            let dst = tree.path(&format!("thumbs/flat_{w}x{h}_thumb.jpg"));
+            let dimensions = generate_image_thumb(&src, &dst)
+                .unwrap_or_else(|e| panic!("{w}x{h} is a valid image but was rejected: {e}"));
+
+            assert_eq!(dimensions, (w, h));
+            assert!(dst.is_file(), "{w}x{h}: the thumbnail must be installed");
+            assert!(image::open(&dst).is_ok(), "{w}x{h}: it must be a decodable image");
+        }
+
+        // The smallest fixture really does land under the old threshold, so the
+        // test would fail against the old code rather than passing vacuously.
+        let tiny = tree.path("thumbs/flat_8x8_thumb.jpg");
+        let size = std::fs::metadata(&tiny).unwrap().len();
+        assert!(size < 1024, "fixture no longer exercises the old guard (was {size} bytes)");
+    }
+
+    /// Header dimensions are reported for an image with no EXIF orientation,
+    /// and a non-image is reported as unknown rather than guessed at.
+    #[test]
+    fn oriented_dimensions_reads_the_header_and_rejects_non_images() {
+        let tree = TempTree::new();
+        let src = tree.path("plain.jpg");
+        let image = image::RgbImage::from_pixel(60, 40, image::Rgb([10, 20, 30]));
+        image.save_with_format(&src, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!(oriented_dimensions(&src), Some((60, 40)));
+
+        let not_an_image = tree.path("notes.jpg");
+        std::fs::write(&not_an_image, b"not an image").unwrap();
+        assert_eq!(oriented_dimensions(&not_an_image), None);
+    }
+}
+
