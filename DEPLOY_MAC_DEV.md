@@ -174,6 +174,23 @@ cd /Users/bobosola/Sites/simplealbum
 caddy run --config Caddyfile.local
 ```
 
+> **If Caddy is already running as a Homebrew service** (`brew services list`
+> shows `caddy started`), this second instance cannot take port 8443 or the
+> admin endpoint on `:2019`, and requests will keep being answered by the
+> *service* — which reads `/opt/homebrew/etc/Caddyfile`, not `Caddyfile.local`.
+> That is the usual reason a config change appears to do nothing. Either stop
+> the service (`brew services stop caddy`) or, better, put the album block below
+> into `/opt/homebrew/etc/Caddyfile` alongside your other sites and reload it:
+>
+> ```bash
+> brew services restart caddy
+> ```
+>
+> Note that the cache-header rules are part of the block: a copy of it without
+> them serves a year-long `Cache-Control` to nobody and, more visibly, lets a
+> browser keep a stale `index.html` — the file that names the versioned CSS and
+> JS — without asking for it again.
+
 The local Caddyfile (`Caddyfile.local`) is already in the repo:
 
 ```caddyfile
@@ -188,6 +205,14 @@ localhost:8443 {
     # cache is safe: a changed file always arrives under a new name.
     @versioned path *.css *.js
     header @versioned Cache-Control "public, max-age=31536000, immutable"
+
+    # index.html is NOT versioned, so it must never be reused without
+    # revalidation: a browser holding a stale copy keeps asking for the asset
+    # filenames that copy names, which the server has already deleted.
+    # `no-cache` means "revalidate before use", not "do not store" — the ETag
+    # makes it a cheap 304.
+    @unversioned path / /index.html
+    header @unversioned Cache-Control "no-cache"
 
     # API reverse proxy
     reverse_proxy /api/* localhost:18080

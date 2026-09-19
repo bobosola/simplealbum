@@ -374,6 +374,14 @@ album.example.com {
     @versioned path *.css *.js
     header @versioned Cache-Control "public, max-age=31536000, immutable"
 
+    # index.html is NOT versioned, so it must never be reused without
+    # revalidation: a browser holding a stale copy keeps asking for the asset
+    # filenames that copy names, which the server has already deleted.
+    # `no-cache` means "revalidate before use", not "do not store" — the ETag
+    # makes it a cheap 304.
+    @unversioned path / /index.html
+    header @unversioned Cache-Control "no-cache"
+
     # API reverse proxy
     reverse_proxy /api/* localhost:8080
 
@@ -561,6 +569,14 @@ localhost {
     @versioned path *.css *.js
     header @versioned Cache-Control "public, max-age=31536000, immutable"
 
+    # index.html is NOT versioned, so it must never be reused without
+    # revalidation: a browser holding a stale copy keeps asking for the asset
+    # filenames that copy names, which the server has already deleted.
+    # `no-cache` means "revalidate before use", not "do not store" — the ETag
+    # makes it a cheap 304.
+    @unversioned path / /index.html
+    header @unversioned Cache-Control "no-cache"
+
     reverse_proxy /api/* localhost:8080
 
     handle_path /photoalbum/* {
@@ -729,6 +745,14 @@ localhost:8443 {
 
     @versioned path *.css *.js
     header @versioned Cache-Control "public, max-age=31536000, immutable"
+
+    # index.html is NOT versioned, so it must never be reused without
+    # revalidation: a browser holding a stale copy keeps asking for the asset
+    # filenames that copy names, which the server has already deleted.
+    # `no-cache` means "revalidate before use", not "do not store" — the ETag
+    # makes it a cheap 304.
+    @unversioned path / /index.html
+    header @unversioned Cache-Control "no-cache"
 
     reverse_proxy /api/* localhost:8080
 
