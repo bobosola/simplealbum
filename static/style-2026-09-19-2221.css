@@ -492,6 +492,18 @@ body.viewer-open {
     box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.55);
 }
 
+/* One rule per share target, keyed by the platform id in app.js.
+   These were inline style attributes until they were the only thing forcing
+   `style-src 'unsafe-inline'` in the Content-Security-Policy; colours are
+   static, so they belong here. */
+.share-dot--accent    { background: var(--accent); }
+.share-dot--email     { background: #6b7280; }
+.share-dot--whatsapp  { background: #25d366; }
+.share-dot--facebook  { background: #1877f2; }
+.share-dot--x         { background: #111111; }
+.share-dot--telegram  { background: #26a5e4; }
+.share-dot--pinterest { background: #e60023; }
+
 .share-url-row {
     display: flex;
     align-items: flex-start;

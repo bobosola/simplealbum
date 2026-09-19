@@ -352,13 +352,16 @@ function viewerDownload() {
 
 // `color` is the brand dot shown beside the label. `imageOnly` targets are
 // hidden when there is no image to attach (i.e. when sharing a folder).
+// `color` is gone: the dot colour is presentational and lives in the
+// stylesheet as `.share-dot--<id>`, so the CSP does not need
+// `style-src 'unsafe-inline'` for it. `id` doubles as the class suffix.
 const SHARE_PLATFORMS = [
-    { id: 'email',     label: 'Email',     color: '#6b7280' },
-    { id: 'whatsapp',  label: 'WhatsApp',  color: '#25d366' },
-    { id: 'facebook',  label: 'Facebook',  color: '#1877f2' },
-    { id: 'x',         label: 'X',         color: '#111111' },
-    { id: 'telegram',  label: 'Telegram',  color: '#26a5e4' },
-    { id: 'pinterest', label: 'Pinterest', color: '#e60023', imageOnly: true },
+    { id: 'email',     label: 'Email' },
+    { id: 'whatsapp',  label: 'WhatsApp' },
+    { id: 'facebook',  label: 'Facebook' },
+    { id: 'x',         label: 'X' },
+    { id: 'telegram',  label: 'Telegram' },
+    { id: 'pinterest', label: 'Pinterest', imageOnly: true },
 ];
 
 let shareTarget = null;
@@ -439,7 +442,7 @@ function openShareSheet(target) {
         const native = document.createElement('button');
         native.type = 'button';
         native.className = 'share-target';
-        native.innerHTML = '<span class="share-dot" style="background:var(--accent)"></span>Share\u2026';
+        native.innerHTML = '<span class="share-dot share-dot--accent"></span>Share\u2026';
         native.addEventListener('click', () => {
             // Fires the user's OS sheet; failures (e.g. user cancelled) are not
             // worth surfacing, since the sheet is dismissed either way.
@@ -454,7 +457,7 @@ function openShareSheet(target) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'share-target';
-        btn.innerHTML = `<span class="share-dot" style="background:${platform.color}"></span>${escapeHtml(platform.label)}`;
+        btn.innerHTML = `<span class="share-dot share-dot--${platform.id}"></span>${escapeHtml(platform.label)}`;
         btn.addEventListener('click', () => {
             const shareUrl = platformShareUrl(platform.id, target);
             // mailto must not go through window.open, or some browsers leave an
