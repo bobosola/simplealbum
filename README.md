@@ -2,6 +2,8 @@
 
 This is a self-hosted cross-platform simple web photo album application. It's basically a web viewer for your existing image folders tree. It serves photos and videos from any folder tree on your web server. These can be organised and named however you like. The application supports many thousands of image or video files. 
 
+It is very lean on resource use (see [Resource Requirements](#resource-requirements) for measurements). During normal operation its CPU use is effectively zero and its memory use is small — about 12 MB idle. Generating thumbnails is a short, CPU-bound burst rather than a heavy one: memory peaks at roughly 100 MB per concurrent worker, so it is bounded by the `[worker] threads` setting rather than by the number of photos and videos. In short, it is a low-resource application that suits a small web server.
+
 You will need the ability to:
 
 - install `FFmpeg` on your web server
