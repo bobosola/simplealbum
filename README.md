@@ -43,7 +43,7 @@ The script will create a new destination folder if needed, provided that its par
 
 Two practical notes:
 
-- **Awkward filenames:** the drag-and-drop prompt re-parses what you paste as shell words, so names containing `'`, `&`, `(` or `)` can confuse it. Pass those as quoted arguments instead — `./sync_photos.sh "Bob's 50th.jpg"` — which bypasses the prompt entirely.
+- **Awkward filenames:** the drag-and-drop prompt re-parses what you paste as shell-style words — unescaping quotes and backslashes, but never executing anything — so a name containing an unescaped `'` or `"` can still confuse its quoting. Pass those as quoted arguments instead — `./sync_photos.sh "Bob's 50th.jpg"` — which bypasses the prompt entirely.
 - **`rsync` version:** creating a missing remote parent directory uses `--mkpath`, which needs rsync 3.2.3 or newer. That is fine on Debian, but the `rsync` bundled with macOS is much older, so install a current one first (`brew install rsync`).
 
 
@@ -57,7 +57,7 @@ Here's what's included:
   site's file tree. The photos are public by design, but no album data lives among your website
   files, so removing the album is a single config-block change.
 - **Automatic thumbnail generation** — image and video thumbnails are created and sized automatically on first detection in a `thumbs` folder within each image folder and deleted when the parent image is deleted
-- **Simple admin mode to choose folder thumbnails** — optionally pick any photo as the thumbnail for its own folder or any ancestor of it (folder thumbnails othwerwise default to the first image in the folder)
+- **Simple admin mode to choose folder thumbnails** — optionally pick any photo as the thumbnail for its own folder or any ancestor of it (folder thumbnails otherwise default to the first image in the folder)
 - **Live filesystem watcher service** —  the site updates automatically as you add or remove photos
 - **Video support** — native HTML5 video player with automatic frame extraction for thumbnails
 - **Dark mode** — persisted automatic or manual toggle

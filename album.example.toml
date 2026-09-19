@@ -1,9 +1,13 @@
-# Local development config for macOS + Caddy.
+# Example configuration for simplealbum.
 #
-# Run with this file explicitly named; the service has no default config path:
+# Copy this file to album.local.toml and edit it. The service has no default
+# config path, so the file is named explicitly on every run:
 #   SIMPLE_ALBUM_LOG=info \
-#   SIMPLE_ALBUM_CONFIG=/Users/bobosola/Sites/simplealbum/album.local.toml \
+#   SIMPLE_ALBUM_CONFIG=/path/to/album.local.toml \
 #   ./target/release/album
+#
+# album.local.toml is gitignored so the live config — including the admin key —
+# can never be committed by accident.
 #
 # Every setting below is required. The service never generates or rewrites this
 # file, and it validates `album.root` and `admin.key` before starting.
@@ -19,15 +23,15 @@ bind = "127.0.0.1:18080"
 public_url = "https://localhost:8443/"
 
 # Shown as og:site_name and as the title when sharing the album root.
-site_name = "Bob & Karen's Photo Album"
+site_name = "My Photo Album"
 
 # Root of the photo tree. Must exist.
 [album]
-root = "/Users/bobosola/photos"
+root = "/path/to/your/photos"
 
 # SQLite database location. Parent directories are created if missing.
 [state]
-db_path = "/Users/bobosola/Sites/simplealbum/album.db"
+db_path = "/path/to/album.db"
 
 # Thumbnail worker tuning.
 # Concurrent thumbnail jobs. 0 = auto (CPU cores, clamped 2-8).
@@ -37,5 +41,6 @@ threads = 0
 
 # Shared secret for admin (cover image) operations. Must not be empty; the
 # service never generates one, so replace this with your own secure value.
+# Generate one with: openssl rand -base64 32
 [admin]
 key = "REPLACE-WITH-YOUR-OWN-KEY"

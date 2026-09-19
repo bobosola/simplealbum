@@ -19,9 +19,21 @@ impl Db {
             "PRAGMA journal_mode = WAL;
              PRAGMA busy_timeout = 5000;",
         )?;
+        let db = Db::from_connection(conn)?;
+        info!("Database opened with WAL mode: {}", path.display());
+        Ok(db)
+    }
+
+    /// An in-memory database, for tests only. It runs the same schema setup as
+    /// [`Db::open`], so the prefix-delete SQL is exercised for real.
+    #[cfg(test)]
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        Db::from_connection(Connection::open_in_memory()?)
+    }
+
+    fn from_connection(conn: Connection) -> anyhow::Result<Self> {
         let db = Db { conn: Mutex::new(conn) };
         db.init()?;
-        info!("Database opened with WAL mode: {}", path.display());
         Ok(db)
     }
 
@@ -179,5 +191,104 @@ impl Db {
             params![folder_path, image_name],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> Db {
+        Db::open_in_memory().expect("in-memory database")
+    }
+
+    fn seed(db: &Db, paths: &[&str]) {
+        for path in paths {
+            db.set_metadata(path, 400, 300, None, 1).unwrap();
+        }
+    }
+
+    #[test]
+    fn metadata_round_trips() {
+        let db = db();
+        assert_eq!(db.get_metadata("a/b.jpg"), None);
+        db.set_metadata("a/b.jpg", 400, 300, Some(12), 1234).unwrap();
+        assert_eq!(db.get_metadata("a/b.jpg"), Some((400, 300, Some(12), 1234)));
+        // A second write updates in place rather than duplicating.
+        db.set_metadata("a/b.jpg", 100, 50, None, 9999).unwrap();
+        assert_eq!(db.get_metadata("a/b.jpg"), Some((100, 50, None, 9999)));
+        db.delete_metadata("a/b.jpg").unwrap();
+        assert_eq!(db.get_metadata("a/b.jpg"), None);
+    }
+
+    #[test]
+    fn delete_metadata_under_purges_only_the_subtree() {
+        let db = db();
+        seed(
+            &db,
+            &[
+                "1970-79/1970/a.jpg",
+                "1970-79/1970/deep/b.jpg",
+                "1970-79/1971/c.jpg",
+                // Shares the `1970-79/197` prefix: a `LIKE '1970-79/197%'`
+                // would wrongly delete this one.
+                "1970-79/19700/d.jpg",
+                // The folder's own key is not "under" itself.
+                "1970-79/1970",
+            ],
+        );
+
+        db.delete_metadata_under("1970-79/1970").unwrap();
+
+        assert_eq!(db.get_metadata("1970-79/1970/a.jpg"), None);
+        assert_eq!(db.get_metadata("1970-79/1970/deep/b.jpg"), None);
+        assert!(db.get_metadata("1970-79/1971/c.jpg").is_some());
+        assert!(db.get_metadata("1970-79/19700/d.jpg").is_some());
+        assert!(db.get_metadata("1970-79/1970").is_some());
+    }
+
+    #[test]
+    fn prefix_deletes_treat_wildcards_as_literal_text() {
+        let db = db();
+        seed(&db, &["100%/a.jpg", "100x/a.jpg", "a_b/p.jpg", "aXb/p.jpg"]);
+
+        db.delete_metadata_under("100%").unwrap();
+        db.delete_metadata_under("a_b").unwrap();
+
+        assert_eq!(db.get_metadata("100%/a.jpg"), None);
+        assert!(db.get_metadata("100x/a.jpg").is_some());
+        assert_eq!(db.get_metadata("a_b/p.jpg"), None);
+        assert!(db.get_metadata("aXb/p.jpg").is_some());
+    }
+
+    #[test]
+    fn delete_covers_under_purges_pointers_into_the_folder() {
+        let db = db();
+        // A cover on an ancestor that points at a photo in the removed folder
+        // must go too, or the grid would show a letterboxed dead cover.
+        db.set_cover("1970-79", "1970-79/1970/a.jpg").unwrap();
+        db.set_cover("1970-79/1970", "1970-79/1970/a.jpg").unwrap();
+        // Unrelated cover, and one whose name merely shares a prefix.
+        db.set_cover("1970-79/1971", "1970-79/1971/b.jpg").unwrap();
+        db.set_cover("1970-79/19700", "1970-79/19700/d.jpg").unwrap();
+
+        db.delete_covers_under("1970-79/1970").unwrap();
+
+        assert_eq!(db.get_cover("1970-79"), None);
+        assert_eq!(db.get_cover("1970-79/1970"), None);
+        assert!(db.get_cover("1970-79/1971").is_some());
+        assert!(db.get_cover("1970-79/19700").is_some());
+    }
+
+    #[test]
+    fn delete_cover_if_matches_requires_the_exact_image() {
+        let db = db();
+        db.set_cover("1970-79/1971", "1970-79/1971/b.jpg").unwrap();
+
+        db.delete_cover_if_matches("1970-79/1971", "1970-79/1971/other.jpg").unwrap();
+        assert!(db.get_cover("1970-79/1971").is_some());
+
+        db.delete_cover_if_matches("1970-79/1971", "1970-79/1971/b.jpg").unwrap();
+        assert_eq!(db.get_cover("1970-79/1971"), None);
     }
 }

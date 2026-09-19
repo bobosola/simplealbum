@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::Config,
+    counts::CountCache,
     db::Db,
     models::{AlbumResponse, Breadcrumb, FolderItem, PhotoItem, SetCoverRequest},
     util,
@@ -17,6 +18,9 @@ use crate::{
 pub struct AppState {
     pub config: Config,
     pub db: std::sync::Arc<Db>,
+    /// Recursive folder counts, invalidated by the filesystem watcher. See
+    /// [`crate::counts`].
+    pub counts: std::sync::Arc<CountCache>,
 }
 
 #[derive(Deserialize)]
@@ -114,9 +118,6 @@ pub async fn share_page(
     Query(query): Query<ShareQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Html<String>, StatusCode> {
-    let cfg = &state.config;
-    let root = &cfg.album.root;
-
     let rel = util::validate_path(&query.path).ok_or(StatusCode::BAD_REQUEST)?;
 
     // `photo`, when present, must be a bare filename: no separators, so it
@@ -128,88 +129,20 @@ pub async fn share_page(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Site root with exactly one trailing slash, e.g. "https://host/photos/".
-    let site = format!("{}/", cfg.server.public_url.trim_end_matches('/'));
-    // Photos are served from the origin root (`/photoalbum/...`), independent of
-    // any path prefix the site itself sits under.
-    let origin = origin_of(&site);
-    let media = |rel_path: &str| format!("{}/photoalbum/{}", origin, encode_rel_path(rel_path));
+    // Resolving the cover can walk directories (see `find_first_thumb_recursive`),
+    // so it belongs on a blocking thread like the album listing, not on an
+    // async worker thread that also serves `/api/health`.
+    let cfg = state.config.clone();
+    let db = state.db.clone();
+    let photo = photo.to_string();
+    let card = tokio::task::spawn_blocking(move || build_share_card(&cfg, &db, &rel, &photo))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
-    let (title, description, image_url, redirect) = if photo.is_empty() {
-        // ---- Folder ----
-        let abs = util::resolve_album_path(root, &rel).ok_or(StatusCode::NOT_FOUND)?;
-        if !abs.is_dir() {
-            return Err(StatusCode::NOT_FOUND);
-        }
-        let name = rel.rsplit('/').next().filter(|s| !s.is_empty());
-        let title = match name {
-            Some(n) => n.to_string(),
-            None => cfg.server.site_name.clone(),
-        };
-        let description = if rel.is_empty() {
-            "Browse our photo and video collection by folder.".to_string()
-        } else {
-            format!("Photos and videos in {}", rel.replace('/', " / "))
-        };
-        // Reuses the same cover resolution as the grid: an admin-chosen cover
-        // first, then the first thumbnail found in the folder or below it.
-        let cover = state
-            .db
-            .get_cover(&rel)
-            .filter(|full| root.join(full).exists())
-            .and_then(|full| compute_cover_thumb(&rel, &full))
-            .or_else(|| find_first_thumb_recursive(root, &rel));
-        let image = cover
-            .map(|c| media(&if rel.is_empty() { c.clone() } else { format!("{}/{}", rel, c) }));
-        (
-            title,
-            description,
-            image,
-            format!("{}#path={}", site, encode_component(&rel)),
-        )
-    } else {
-        // ---- Single photo or video ----
-        // Resolve the media path itself: `rel` is only the folder it lives in.
-        let photo_rel = if rel.is_empty() {
-            photo.to_string()
-        } else {
-            format!("{}/{}", rel, photo)
-        };
-        let photo_abs =
-            util::resolve_album_path(root, &photo_rel).ok_or(StatusCode::NOT_FOUND)?;
-        if !photo_abs.is_file() || !util::is_media_file(photo) {
-            return Err(StatusCode::NOT_FOUND);
-        }
-        let thumb_rel = if rel.is_empty() {
-            format!("thumbs/{}", util::thumb_name(photo))
-        } else {
-            format!("{}/thumbs/{}", rel, util::thumb_name(photo))
-        };
-        // Prefer the thumbnail: originals run to several MB, well past the
-        // 600KB that WhatsApp will accept for a preview image. Fall back to the
-        // original when the worker has not produced a thumbnail yet.
-        let image = if root.join(&thumb_rel).is_file() {
-            Some(media(&thumb_rel))
-        } else {
-            Some(media(&photo_rel))
-        };
-        let description = if rel.is_empty() {
-            cfg.server.site_name.clone()
-        } else {
-            format!("From {}", rel.replace('/', " / "))
-        };
-        (
-            photo.to_string(),
-            description,
-            image,
-            media(&photo_rel),
-        )
-    };
-
-    let title_esc = escape_html(&title);
-    let site_esc = escape_html(&cfg.server.site_name);
-    let desc_esc = escape_html(&description);
-    let redirect_esc = escape_html(&redirect);
+    let title_esc = escape_html(&card.title);
+    let site_esc = escape_html(&state.config.server.site_name);
+    let desc_esc = escape_html(&card.description);
+    let redirect_esc = escape_html(&card.redirect);
 
     // Image tags are omitted entirely when no image is available. Pointing
     // og:image at a file that may not exist would be worse than saying nothing:
@@ -217,7 +150,7 @@ pub async fn share_page(
     // picture. A folder whose thumbnails have not been generated yet therefore
     // yields a text-only card, which is honest and recovers by itself once the
     // worker catches up.
-    let (image_tags, twitter_image_tag, twitter_card) = match image_url {
+    let (image_tags, twitter_image_tag, twitter_card) = match card.image_url {
         Some(url) => {
             let url = escape_html(&url);
             (
@@ -261,29 +194,163 @@ pub async fn share_page(
     Ok(Html(page))
 }
 
+/// The pieces of a link-preview card, resolved from the filesystem.
+struct ShareCard {
+    title: String,
+    description: String,
+    image_url: Option<String>,
+    redirect: String,
+}
+
+/// Blocking half of [`share_page`]: resolve the folder or photo being shared
+/// and build the values the Open Graph tags need.
+fn build_share_card(
+    cfg: &Config,
+    db: &Db,
+    rel: &str,
+    photo: &str,
+) -> Result<ShareCard, StatusCode> {
+    let root = &cfg.album.root;
+
+    // Site root with exactly one trailing slash, e.g. "https://host/photos/".
+    let site = format!("{}/", cfg.server.public_url.trim_end_matches('/'));
+    // Photos are served from the origin root (`/photoalbum/...`), independent of
+    // any path prefix the site itself sits under.
+    let origin = origin_of(&site);
+    let media = |rel_path: &str| format!("{}/photoalbum/{}", origin, encode_rel_path(rel_path));
+
+    if photo.is_empty() {
+        // ---- Folder ----
+        let abs = util::resolve_album_path(root, rel).ok_or(StatusCode::NOT_FOUND)?;
+        if !abs.is_dir() {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let name = rel.rsplit('/').next().filter(|s| !s.is_empty());
+        let title = match name {
+            Some(n) => n.to_string(),
+            None => cfg.server.site_name.clone(),
+        };
+        let description = if rel.is_empty() {
+            "Browse our photo and video collection by folder.".to_string()
+        } else {
+            format!("Photos and videos in {}", rel.replace('/', " / "))
+        };
+        // Reuses the same cover resolution as the grid: an admin-chosen cover
+        // first, then the first thumbnail found in the folder or below it.
+        let cover = db
+            .get_cover(rel)
+            .filter(|full| root.join(full).exists())
+            .and_then(|full| compute_cover_thumb(rel, &full))
+            .or_else(|| find_first_thumb_recursive(root, rel));
+        let image = cover.map(|c| {
+            media(&if rel.is_empty() {
+                c.clone()
+            } else {
+                format!("{}/{}", rel, c)
+            })
+        });
+        Ok(ShareCard {
+            title,
+            description,
+            image_url: image,
+            redirect: format!("{}#path={}", site, encode_component(rel)),
+        })
+    } else {
+        // ---- Single photo or video ----
+        // Resolve the media path itself: `rel` is only the folder it lives in.
+        let photo_rel = if rel.is_empty() {
+            photo.to_string()
+        } else {
+            format!("{}/{}", rel, photo)
+        };
+        let photo_abs = util::resolve_album_path(root, &photo_rel).ok_or(StatusCode::NOT_FOUND)?;
+        if !photo_abs.is_file() || !util::is_media_file(photo) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let thumb_rel = if rel.is_empty() {
+            format!("thumbs/{}", util::thumb_name(photo))
+        } else {
+            format!("{}/thumbs/{}", rel, util::thumb_name(photo))
+        };
+        // Prefer the thumbnail: originals run to several MB, well past the
+        // 600KB that WhatsApp will accept for a preview image. Fall back to the
+        // original when the worker has not produced a thumbnail yet.
+        let image = if root.join(&thumb_rel).is_file() {
+            Some(media(&thumb_rel))
+        } else {
+            Some(media(&photo_rel))
+        };
+        let description = if rel.is_empty() {
+            cfg.server.site_name.clone()
+        } else {
+            format!("From {}", rel.replace('/', " / "))
+        };
+        Ok(ShareCard {
+            title: photo.to_string(),
+            description,
+            image_url: image,
+            redirect: media(&photo_rel),
+        })
+    }
+}
+
 pub async fn get_album(
     Query(query): Query<AlbumQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AlbumResponse>, StatusCode> {
     let rel_path = util::validate_path(&query.path).ok_or(StatusCode::BAD_REQUEST)?;
-    let abs_path = util::resolve_album_path(&state.config.album.root, &rel_path)
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    // A path that is well-formed but absent is a 404; only a path that is
+    // rejected — traversal, absolute, or resolving outside the album — is a
+    // 400. Collapsing both into 400 told every caller the request was
+    // malformed when the folder had simply been deleted.
+    let abs_path = util::resolve_album_path_checked(&state.config.album.root, &rel_path)
+        .map_err(|e| match e {
+            util::PathError::Rejected => StatusCode::BAD_REQUEST,
+            util::PathError::NotFound => StatusCode::NOT_FOUND,
+        })?;
 
     if !abs_path.is_dir() {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let name = abs_path.file_name()
+    // Everything below is blocking filesystem work — `read_dir`, counting the
+    // subtree of every subfolder, resolving covers — and it must not run on a
+    // Tokio worker thread. A folder with many subfolders can occupy a runtime
+    // thread for seconds, and a few concurrent page loads were enough to stall
+    // unrelated requests (including `/api/health`).
+    let root = state.config.album.root.clone();
+    let db = state.db.clone();
+    let counts = state.counts.clone();
+    let rel = rel_path.clone();
+    let response = tokio::task::spawn_blocking(move || {
+        build_album_response(&root, &db, &counts, &rel, &abs_path)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(response))
+}
+
+/// Blocking half of [`get_album`]: list one folder from disk.
+fn build_album_response(
+    root: &std::path::Path,
+    db: &Db,
+    counts: &CountCache,
+    rel_path: &str,
+    abs_path: &std::path::Path,
+) -> Result<AlbumResponse, StatusCode> {
+    let name = abs_path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Home")
         .to_string();
 
-    let breadcrumbs = build_breadcrumbs(&rel_path);
+    let breadcrumbs = build_breadcrumbs(rel_path);
 
     let mut folders = vec![];
     let mut photos = vec![];
 
-    let entries = std::fs::read_dir(&abs_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let entries = std::fs::read_dir(abs_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
     entries.sort_by(|a, b| {
         let an = a.file_name();
@@ -306,15 +373,17 @@ pub async fn get_album(
             } else {
                 format!("{}/{}", rel_path, fname_str)
             };
-            let (count_photos, count_albums) = count_contents(&state.config.album.root, &sub_path);
-            let cover = state.db.get_cover(&sub_path)
+            // Answered from the cache on every level below the first, so
+            // browsing does not re-walk the tree once per folder visited.
+            let (count_photos, count_albums) = counts.count(root, &sub_path);
+            let cover = db.get_cover(&sub_path)
                 .filter(|full_path| {
                     // Verify the cover image still exists (wasn't deleted)
-                    let full = state.config.album.root.join(full_path);
+                    let full = root.join(full_path);
                     full.exists()
                 })
                 .and_then(|full_path| compute_cover_thumb(&sub_path, &full_path))
-                .or_else(|| find_first_thumb_recursive(&state.config.album.root, &sub_path));
+                .or_else(|| find_first_thumb_recursive(root, &sub_path));
             folders.push(FolderItem {
                 name: fname_str.to_string(),
                 path: sub_path,
@@ -328,7 +397,7 @@ pub async fn get_album(
             } else {
                 format!("{}/{}", rel_path, fname_str)
             };
-            let (width, height, duration) = state.db.get_metadata(&photo_rel)
+            let (width, height, duration) = db.get_metadata(&photo_rel)
                 .map(|(w, h, duration, _)| (w, h, duration))
                 .unwrap_or((0, 0, None));
             let thumb = format!("thumbs/{}", util::thumb_name(&fname_str));
@@ -349,13 +418,13 @@ pub async fn get_album(
         }
     }
 
-    Ok(Json(AlbumResponse {
-        path: rel_path.clone(),
+    Ok(AlbumResponse {
+        path: rel_path.to_string(),
         name,
         breadcrumbs,
         folders,
         photos,
-    }))
+    })
 }
 
 pub async fn set_cover(
@@ -386,8 +455,11 @@ pub async fn set_cover(
     }
 
     let image_path = util::validate_path(&body.image_path).ok_or(StatusCode::BAD_REQUEST)?;
-    let image_abs = util::resolve_album_path(&state.config.album.root, &image_path)
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let image_abs = util::resolve_album_path_checked(&state.config.album.root, &image_path)
+        .map_err(|e| match e {
+            util::PathError::Rejected => StatusCode::BAD_REQUEST,
+            util::PathError::NotFound => StatusCode::NOT_FOUND,
+        })?;
     // It must be a real media file, not a directory and not a stray non-media
     // file. A stored cover is consulted before the computed fallback, so a bad
     // value would leave that folder showing a placeholder until it is changed
@@ -448,58 +520,6 @@ fn build_breadcrumbs(rel_path: &str) -> Vec<Breadcrumb> {
         });
     }
     crumbs
-}
-
-fn count_contents(root: &std::path::Path, rel: &str) -> (usize, usize) {
-    // Iterative DFS to avoid unbounded recursion.
-    // Each stack item is (relative_path, is_top_level).
-    // is_top_level is true only for direct children of the queried folder.
-    // We count albums only at the top level; photos are counted at all levels.
-    let mut stack = vec![(rel.to_string(), true)];
-    let mut photos = 0;
-    let mut albums = 0;
-
-    while let Some((current_rel, is_top_level)) = stack.pop() {
-        let path = root.join(&current_rel);
-        let Ok(dir_entries) = std::fs::read_dir(&path) else { continue };
-        for entry in dir_entries.filter_map(|e| e.ok()) {
-            let name = entry.file_name();
-            let s = name.to_string_lossy();
-            if s.starts_with('.') || s == "thumbs" {
-                continue;
-            }
-            // `file_type()` reads the entry type from the directory itself, so
-            // it needs no extra `stat` per entry and — unlike `metadata()` — it
-            // does not follow symlinks. That matters here as much as in the
-            // worker's walk: a symlink pointing back up the tree would make
-            // this walk run forever while holding an async worker thread, and
-            // one pointing outside the album would count files the album does
-            // not own. Symlinked files are still counted via the metadata()
-            // fallback below; symlinked directories are skipped.
-            let Ok(file_type) = entry.file_type() else { continue };
-            let is_symlink = file_type.is_symlink();
-            let is_dir = if is_symlink {
-                entry.metadata().map(|m| m.is_dir()).unwrap_or(false)
-            } else {
-                file_type.is_dir()
-            };
-            if is_dir && !is_symlink {
-                if is_top_level {
-                    albums += 1;
-                }
-                let sub_rel = if current_rel.is_empty() {
-                    s.to_string()
-                } else {
-                    format!("{}/{}", current_rel, s)
-                };
-                stack.push((sub_rel, false));
-            } else if !is_dir && util::is_media_file(&s) {
-                photos += 1;
-            }
-        }
-    }
-
-    (photos, albums)
 }
 
 /// Find the first available thumbnail in a folder or any of its descendants.

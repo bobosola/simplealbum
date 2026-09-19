@@ -213,6 +213,14 @@ pub struct VideoInfo {
 /// video stream: both are usually present, but the container value is the one
 /// that covers the whole clip, which is what a "10% in" seek needs. A missing
 /// or unparseable duration is not an error — dimensions alone are still useful.
+///
+/// The dimensions returned are the *display* dimensions. Phone cameras store a
+/// landscape frame plus a rotation matrix ("rotate 90°"), and ffmpeg applies
+/// that rotation when it extracts the poster frame — so reporting the coded
+/// width/height here would label every portrait video as landscape while the
+/// thumbnail next to it is correct. The rotation lives in the stream's side
+/// data (`rotation`, from the Display Matrix) with the older `rotate` tag as a
+/// fallback, so both are requested.
 pub fn probe_video(src: &Path) -> Option<VideoInfo> {
     let mut cmd = Command::new("ffprobe");
     cmd.args([
@@ -221,7 +229,7 @@ pub fn probe_video(src: &Path) -> Option<VideoInfo> {
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height:format=duration",
+        "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration",
         "-of",
         "json",
     ])
@@ -235,6 +243,7 @@ pub fn probe_video(src: &Path) -> Option<VideoInfo> {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let stream = json.get("streams")?.get(0)?;
+    let (width, height) = display_dimensions(stream)?;
 
     let duration_secs = json
         .get("format")
@@ -244,10 +253,55 @@ pub fn probe_video(src: &Path) -> Option<VideoInfo> {
         .filter(|d| d.is_finite() && *d > 0.0);
 
     Some(VideoInfo {
-        width: stream.get("width")?.as_u64()? as u32,
-        height: stream.get("height")?.as_u64()? as u32,
+        width,
+        height,
         duration_secs,
     })
+}
+
+/// The dimensions a viewer sees for one ffprobe stream object: the coded size
+/// with width and height swapped when the display rotation is a quarter turn.
+fn display_dimensions(stream: &serde_json::Value) -> Option<(u32, u32)> {
+    let width = stream.get("width")?.as_u64()? as u32;
+    let height = stream.get("height")?.as_u64()? as u32;
+    if is_quarter_turn(stream) {
+        Some((height, width))
+    } else {
+        Some((width, height))
+    }
+}
+
+/// Whether a stream carries a 90°/270° display rotation.
+///
+/// Both spellings are read: modern containers carry a Display Matrix in the
+/// stream's side data (`rotation`), which is what current ffprobe versions
+/// expose, while older files use a `rotate` tag. A rotation of 180° leaves the
+/// aspect ratio alone, so only quarter turns count.
+fn is_quarter_turn(stream: &serde_json::Value) -> bool {
+    fn degrees(value: &serde_json::Value) -> Option<f64> {
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+    }
+
+    let side_data = stream
+        .get("side_data_list")
+        .and_then(|list| list.as_array())
+        .and_then(|list| list.iter().find_map(|entry| entry.get("rotation").and_then(degrees)));
+
+    let tag = stream
+        .get("tags")
+        .and_then(|tags| tags.get("rotate"))
+        .and_then(degrees);
+
+    match side_data.or(tag) {
+        // `rem_euclid` maps the -90 that some writers use to 270.
+        Some(rotation) => {
+            let normalized = rotation.rem_euclid(360.0);
+            (normalized - 90.0).abs() < 1.0 || (normalized - 270.0).abs() < 1.0
+        }
+        None => false,
+    }
 }
 
 /// Extract a poster frame for a video.
@@ -256,7 +310,10 @@ pub fn probe_video(src: &Path) -> Option<VideoInfo> {
 /// clip, because the opening second is frequently a title card, a fade from
 /// black, or nothing at all. `-ss` before `-i` is a fast seek, so it lands on
 /// the nearest preceding keyframe rather than decoding from the start. When the
-/// duration is unknown, one second is the fallback.
+/// duration is unknown the frame is taken from the very start: a fixed one
+/// second is wrong for a clip shorter than that, where the seek lands past the
+/// last frame and ffmpeg fails, leaving the file thumbless until it next
+/// changes.
 pub fn generate_video_thumb(
     src: &Path,
     dst: &Path,
@@ -270,7 +327,9 @@ pub fn generate_video_thumb(
         // Keep the seek inside the clip: a 0.4s video must not be seeked to 0.4s
         // and land past the last frame.
         Some(duration) => (duration * 0.1).clamp(0.0, (duration - 0.1).max(0.0)),
-        None => 1.0,
+        // Unknown duration: the first frame is the only offset guaranteed to be
+        // inside the clip, however short it is.
+        None => 0.0,
     };
     let seek_arg = format!("{seek:.3}");
 
@@ -326,6 +385,55 @@ pub fn delete_thumb(root: &Path, rel: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quarter_turn_rotations_swap_dimensions() {
+        let rotated = serde_json::json!({
+            "width": 320,
+            "height": 240,
+            "side_data_list": [{"rotation": 90}]
+        });
+        assert_eq!(display_dimensions(&rotated), Some((240, 320)));
+
+        // Negative and 270° spellings are the same quarter turn.
+        for rotation in [-90.0, 270.0, -270.0] {
+            let stream = serde_json::json!({
+                "width": 320,
+                "height": 240,
+                "side_data_list": [{"rotation": rotation}]
+            });
+            assert_eq!(display_dimensions(&stream), Some((240, 320)), "rotation {rotation}");
+        }
+
+        // The older `rotate` tag is honoured when there is no side data.
+        let tagged = serde_json::json!({
+            "width": 320,
+            "height": 240,
+            "tags": {"rotate": "90"}
+        });
+        assert_eq!(display_dimensions(&tagged), Some((240, 320)));
+    }
+
+    #[test]
+    fn non_quarter_turn_rotations_keep_dimensions() {
+        for rotation in [0, 180, -180] {
+            let stream = serde_json::json!({
+                "width": 320,
+                "height": 240,
+                "side_data_list": [{"rotation": rotation}]
+            });
+            assert_eq!(display_dimensions(&stream), Some((320, 240)), "rotation {rotation}");
+        }
+        // No rotation information at all is the common case.
+        let plain = serde_json::json!({"width": 1920, "height": 1080});
+        assert_eq!(display_dimensions(&plain), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn missing_dimensions_are_reported_as_none() {
+        let stream = serde_json::json!({"width": 320});
+        assert_eq!(display_dimensions(&stream), None);
+    }
 
     #[test]
     fn encoder_matches_the_thumbnail_extension() {

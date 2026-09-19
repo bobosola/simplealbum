@@ -5,8 +5,8 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::counts::CountCache;
 use crate::db::Db;
-use crate::util;
 use crate::worker::{self, ThumbJob};
 
 /// Start the recursive filesystem watcher.
@@ -18,6 +18,7 @@ pub fn start(
     album_root: &Path,
     db: Arc<Db>,
     tx: mpsc::UnboundedSender<ThumbJob>,
+    counts: Arc<CountCache>,
 ) -> anyhow::Result<RecommendedWatcher> {
     let root = album_root.to_path_buf();
     let handle = tokio::runtime::Handle::current();
@@ -58,6 +59,9 @@ pub fn start(
                 }
                 match event.kind {
                     notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {
+                        // Any add, rename or content change can alter counts, so
+                        // drop the cached ones. Cheap: a single atomic bump.
+                        counts.invalidate();
                         if path.is_file() {
                             let _ = tx.send(ThumbJob::Create { rel_path: rel_str });
                         } else if path.is_dir() {
@@ -65,15 +69,22 @@ pub fn start(
                             // as one event for the folder; its files are not
                             // reported individually, so walk it.
                             scan_folder(&handle, &root, &db, &tx, &scanning, rel_str);
-                        } else if util::is_media_file(&rel_str) {
-                            // A rename or move is delivered as a Modify naming
-                            // the *old* path, where nothing exists any more. It
-                            // is not a Remove, so without this branch the stale
-                            // thumbnail and metadata row would never be cleaned
-                            // up — and the orphaned `*_thumb.jpg` could later be
-                            // adopted as that folder's cover. Treat a vanished
-                            // media path as a delete; the destination path
-                            // arrives as its own event and is regenerated there.
+                        } else {
+                            // The path does not exist any more. That is how a
+                            // rename or move reports its *source*
+                            // (`IN_MOVED_FROM` arrives as a Modify naming the
+                            // old path), while the destination arrives as its
+                            // own event and is regenerated there.
+                            //
+                            // For a *file* this reclaims the stale thumbnail
+                            // and metadata row. For a **folder** it purges
+                            // every row recorded beneath the old path, which is
+                            // the only chance we get: a moved folder's contents
+                            // are re-scanned at the destination, but nothing
+                            // else would ever reclaim the old prefix, so those
+                            // rows were orphaned forever. The worker decides
+                            // which case it is (it can check the name), so a
+                            // vanished non-media path is harmless here.
                             let _ = tx.send(ThumbJob::Delete { rel_path: rel_str });
                         }
                     }
@@ -94,6 +105,7 @@ pub fn start(
                     notify::EventKind::Remove(_) => {
                         // May be a single file or a whole folder; the worker
                         // distinguishes the two cases itself.
+                        counts.invalidate();
                         let _ = tx.send(ThumbJob::Delete { rel_path: rel_str });
                     }
                     _ => {}

@@ -25,6 +25,19 @@ const STABILITY_MAX_SAMPLES: u32 = 3;
 /// [`thumb_is_fresh`] for why such a timestamp cannot be trusted.
 const UNTRUSTED_MTIME_GRACE: Duration = Duration::from_secs(5);
 
+/// Upper bound on Create jobs whose stability pre-pass is running at once.
+///
+/// The job queue is unbounded and the consumer loop spawns one task per job, so
+/// without this the first scan of a large tree (one job per file) would create
+/// thousands of concurrent tasks, each taking stat samples and hammering the
+/// single SQLite connection mutex — all before the smaller generation
+/// semaphore below is reached. Taking a permit *before* spawning bounds the
+/// task count; because the pre-pass only sleeps, a few hundred files still wait
+/// out their uploads in parallel, so throughput of finished files is unchanged.
+/// When the cap is hit the consumer stops draining the queue, which is the
+/// back-pressure that keeps the burst bounded.
+const PREPASS_CONCURRENCY: usize = 256;
+
 #[derive(Debug, Clone)]
 pub enum ThumbJob {
     Create { rel_path: String },
@@ -68,6 +81,7 @@ impl Worker {
             concurrency
         );
         let semaphore = Arc::new(Semaphore::new(concurrency));
+        let prepass = Arc::new(Semaphore::new(PREPASS_CONCURRENCY));
 
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
@@ -97,10 +111,20 @@ impl Worker {
                         // them: 200 files x 300 ms = 60 s). Only jobs that
                         // actually need work then acquire a permit, so worker
                         // throughput is identical to the no-wait design.
+                        //
+                        // `prepass` bounds how many of those tasks exist at
+                        // once; acquiring it here suspends the receive loop
+                        // rather than spawning an unbounded number of waiters.
                         let root = root.clone();
                         let db = db.clone();
                         let semaphore = semaphore.clone();
+                        let pre_pass_permit = prepass
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .expect("pre-pass semaphore is never closed");
                         tokio::spawn(async move {
+                            let _pre_pass_permit = pre_pass_permit; // held across the wait
                             if !await_stable(&root, &db, &rel_path).await {
                                 return;
                             }

@@ -1,4 +1,6 @@
 /target
 .DS_Store
 album.db*
+# The live config holds the admin key; only album.example.toml is committed.
+album.local.toml
 prompts

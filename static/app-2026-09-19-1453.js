@@ -229,6 +229,14 @@ function stopViewerVideo() {
 function renderViewerItem() {
     stopViewerVideo();
     const photo = currentAlbum.photos[currentViewerIndex];
+    // A stale index must not throw. `popstate` can hand back a viewer entry
+    // that outlives the photo it points at (deleted on another device, or a
+    // folder with fewer photos reloaded), and the exception left the viewer
+    // stuck open with its previous content.
+    if (!photo) {
+        hideViewer();
+        return;
+    }
     const content = document.getElementById('viewer-content');
     const src = photoUrl(photo.name);
     content.innerHTML = '';
@@ -303,6 +311,7 @@ function hideViewer() {
 
 function viewerDownload() {
     const photo = currentAlbum.photos[currentViewerIndex];
+    if (!photo) return;
     const src = photoUrl(photo.name);
     const a = document.createElement('a');
     a.href = src;
@@ -343,12 +352,6 @@ function siteName() {
 function shareText(label) {
     const site = siteName();
     return label && label !== site ? `${label} \u2014 ${site}` : site;
-}
-
-// Page URL for the album root, used as the fallback when no path is set.
-function folderPageUrl(path) {
-    const base = `${window.location.origin}${window.location.pathname}`;
-    return path ? `${base}#path=${encodeURIComponent(path)}` : base;
 }
 
 // Shareable URL for a folder or a single photo.
@@ -598,14 +601,28 @@ window.addEventListener('popstate', e => {
 
     // Handle viewer open/close transitions
     if (state && state.view !== undefined) {
+        const index = state.view;
+        // Only restore a viewer entry whose photo still exists in the loaded
+        // album. Otherwise (the photo was deleted, or a different folder is
+        // loaded) there is nothing to show, so leave the viewer closed instead
+        // of rendering an undefined entry.
+        if (
+            !currentAlbum ||
+            !Number.isInteger(index) ||
+            index < 0 ||
+            index >= currentAlbum.photos.length
+        ) {
+            hideViewer();
+            return;
+        }
         // State has a view index — open or update the viewer
         if (viewer.classList.contains('hidden')) {
-            currentViewerIndex = state.view;
+            currentViewerIndex = index;
             viewer.classList.remove('hidden');
             document.body.classList.add('viewer-open');
             renderViewerItem();
-        } else if (state.view !== currentViewerIndex) {
-            currentViewerIndex = state.view;
+        } else if (index !== currentViewerIndex) {
+            currentViewerIndex = index;
             renderViewerItem();
         }
         return;

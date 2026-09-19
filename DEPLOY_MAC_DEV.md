@@ -75,7 +75,15 @@ You can add or remove photos at any time while the service is running.
 
 ## 3. Create Local Config File
 
-A pre-made local config exists at `album.local.toml`:
+The committed template is `album.example.toml`. Copy it to `album.local.toml`,
+which is gitignored so the live config — including its admin key — can never be
+committed by accident:
+
+```bash
+cp album.example.toml album.local.toml
+```
+
+The local config used here looks like:
 
 ```toml
 # API bind address and port

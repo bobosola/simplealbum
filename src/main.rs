@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod counts;
 mod db;
 mod models;
 mod thumb;
@@ -20,6 +21,7 @@ use tracing::{info, warn};
 use crate::{
     api::{AppState, get_album, health, set_cover, share_page},
     config::Config,
+    counts::CountCache,
     db::Db,
     worker::{scan_existing, Worker},
 };
@@ -80,10 +82,19 @@ async fn main() -> anyhow::Result<()> {
     let db = Arc::new(Db::open(&cfg.state.db_path)?);
     let worker = Worker::spawn(cfg.clone(), db.clone());
 
+    // Recursive folder counts are cached here and invalidated by the watcher on
+    // every change, so a browse does not re-walk the tree at each level.
+    let counts = Arc::new(CountCache::new());
+
     // The watcher is started *before* the initial scan, not after. The scan can
     // take a while on a large tree, and anything added while it runs would
     // otherwise be missed entirely until the next restart.
-    let _watcher = watcher::start(&cfg.album.root, db.clone(), worker.tx.clone())?;
+    let _watcher = watcher::start(
+        &cfg.album.root,
+        db.clone(),
+        worker.tx.clone(),
+        counts.clone(),
+    )?;
 
     // The scan then runs on a blocking thread rather than inline: it walks the
     // whole photo tree, and there is no reason for the API to be unreachable
@@ -100,7 +111,11 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let state = Arc::new(AppState { config: cfg.clone(), db });
+    let state = Arc::new(AppState {
+        config: cfg.clone(),
+        db,
+        counts,
+    });
 
     let app = Router::new()
         .route("/api/album", get(get_album))

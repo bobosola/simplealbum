@@ -22,16 +22,40 @@ pub fn validate_path(input: &str) -> Option<String> {
     Some(input.to_string())
 }
 
-pub fn resolve_album_path(root: &Path, rel: &str) -> Option<PathBuf> {
-    let rel = validate_path(rel)?;
+/// Why a client-supplied path could not be resolved to an album path.
+///
+/// The distinction matters for HTTP status codes: a path that is *malformed* or
+/// escapes the album is the client's mistake (400), while a well-formed path
+/// that simply does not exist is a missing resource (404). Reporting both as
+/// 400 made the API lie about "not found".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathError {
+    /// Traversal, an absolute path, a drive prefix, or a path that resolves
+    /// outside the album root (e.g. through a symlink).
+    Rejected,
+    /// The path is acceptable but nothing exists at it.
+    NotFound,
+}
+
+/// Resolve `rel` against `root`, preserving *why* it failed.
+///
+/// `canonicalize` fails when the path does not exist, which is a 404, not a
+/// malformed request; only the validation and outside-the-root cases are
+/// [`PathError::Rejected`].
+pub fn resolve_album_path_checked(root: &Path, rel: &str) -> Result<PathBuf, PathError> {
+    let rel = validate_path(rel).ok_or(PathError::Rejected)?;
     let joined = root.join(&rel);
-    let canonical = std::fs::canonicalize(&joined).ok()?;
-    let root_canonical = std::fs::canonicalize(root).ok()?;
+    let canonical = std::fs::canonicalize(&joined).map_err(|_| PathError::NotFound)?;
+    let root_canonical = std::fs::canonicalize(root).map_err(|_| PathError::NotFound)?;
     if canonical.starts_with(&root_canonical) {
-        Some(canonical)
+        Ok(canonical)
     } else {
-        None
+        Err(PathError::Rejected)
     }
+}
+
+pub fn resolve_album_path(root: &Path, rel: &str) -> Option<PathBuf> {
+    resolve_album_path_checked(root, rel).ok()
 }
 
 pub fn is_ancestor(parent: &str, child: &str) -> bool {
@@ -104,6 +128,28 @@ mod tests {
     fn validate_path_rejects_windows_drive_prefixes() {
         assert_eq!(validate_path("C:/Windows"), None);
         assert_eq!(validate_path("C:\\Windows"), None);
+    }
+
+    #[test]
+    fn resolve_reports_rejected_separately_from_not_found() {
+        let root = std::env::temp_dir().join(format!("simplealbum-util-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("album")).unwrap();
+
+        // Malformed or escaping paths are rejected outright.
+        assert_eq!(resolve_album_path_checked(&root, ".."), Err(PathError::Rejected));
+        assert_eq!(resolve_album_path_checked(&root, "/etc/passwd"), Err(PathError::Rejected));
+
+        // Well-formed but absent paths are "not found", so the API can answer 404.
+        assert_eq!(resolve_album_path_checked(&root, "missing.jpg"), Err(PathError::NotFound));
+
+        // An existing path resolves, and the Option wrapper still works.
+        let resolved = resolve_album_path_checked(&root, "album").unwrap();
+        assert!(resolved.ends_with("album"));
+        assert_eq!(resolve_album_path(&root, "album"), Some(resolved));
+        assert_eq!(resolve_album_path(&root, "missing.jpg"), None);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

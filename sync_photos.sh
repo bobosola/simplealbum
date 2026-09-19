@@ -25,6 +25,54 @@ CHMOD_OPTS="--chmod=D2775,F664"
 # 1. Collect sources (files and/or folders)
 SOURCES=()
 
+# Split a line of user input into SOURCES the way a shell would, but without
+# executing anything.
+#
+# Dragging a file into a terminal inserts shell-quoted text (spaces become
+# `\ `, and the path may also be wrapped in quotes), so the input has to be
+# unescaped. The previous implementation did that with
+# `eval "SOURCES=($USER_INPUT)"`, which *also* runs command substitutions:
+# pasting a path containing `$(...)` executed it. This parser only removes
+# quoting and never expands anything.
+parse_sources() {
+    SOURCES=()
+    local input="$1"
+    local i=0 n=${#1}
+    local ch word="" quote="" in_word=0
+
+    while [ "$i" -lt "$n" ]; do
+        ch="${input:$i:1}"
+        if [ -n "$quote" ]; then
+            if [ "$ch" = "$quote" ]; then
+                quote=""
+            elif [ "$ch" = '\' ] && [ "$quote" = '"' ]; then
+                i=$((i + 1))
+                word="${word}${input:$i:1}"
+            else
+                word="${word}${ch}"
+            fi
+        else
+            case "$ch" in
+                '\') i=$((i + 1)); word="${word}${input:$i:1}"; in_word=1 ;;
+                "'"|'"') quote="$ch"; in_word=1 ;;
+                [[:space:]])
+                    if [ "$in_word" -eq 1 ]; then
+                        SOURCES+=("$word")
+                        word=""
+                        in_word=0
+                    fi
+                    ;;
+                *) word="${word}${ch}"; in_word=1 ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+
+    if [ "$in_word" -eq 1 ]; then
+        SOURCES+=("$word")
+    fi
+}
+
 if [ "$#" -gt 0 ]; then
     SOURCES=("$@")
 else
@@ -40,7 +88,7 @@ else
     fi
 
     # Parse drag-and-dropped paths (handles quotes and escaped spaces)
-    eval "SOURCES=($USER_INPUT)"
+    parse_sources "$USER_INPUT"
 fi
 
 # 2. Validate all source items exist
