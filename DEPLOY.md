@@ -53,7 +53,8 @@ The `og:image` and `twitter:image` values must be absolute and must point at a r
 - 1200×630 (1.91:1) is the recommended size. Below 600×315 most platforms drop to a small thumbnail, and below 100×100 the image is discarded.
 - Keep it under **600KB** — WhatsApp's limit. JPEG or PNG; if you switch to JPEG, update `og:image:type` in `index.html` to match.
 - There is no requirement to generate one from scratch. Any photo cropped to 1200×630 works, and is arguably a better fit for a photo album than a designed card.
-- If you would rather not have one at all, delete the file **and** the four `og:image` / `twitter:image` / `og:image:type` / `og:image:*` lines. The preview then shows text only.
+- If you would rather not have one at all, delete the file **and** the `og:image*` / `twitter:image` lines beside it in `index.html` (six lines: `og:image`, `og:image:type`, `og:image:width`, `og:image:height`, `og:image:alt`, `twitter:image`). The preview then shows text only.
+- Remember what it covers: only a link to the album's own page. The in-app Share button hands out an `/api/share` link, whose preview image is the shared folder's or photo's thumbnail, so `og-image.png` is never used for those.
 
 **`album.toml`** — `server.public_url`, `server.site_name` (keep it matching the `<h1>`), `server.bind`, `album.root`, `state.db_path`.
 

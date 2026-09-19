@@ -21,9 +21,9 @@ It's a single Rust binary with a static front end consisting of:
 - one HTML file
 - one CSS file
 - one vanilla JS file
-- one PNG (`og-image.png`), used as the link-preview image when the site is shared
+- one PNG (`og-image.png`), the link-preview image for a link to the album's *own page* — the bare URL, or a `#path=...` URL copied out of the address bar. Links the app produces do not use it: the Share button, and its Copy button, both hand out an `/api/share` link, which carries the shared folder's or photo's own thumbnail as the preview image
 
-The CSS and JS filenames are versioned (e.g. `style-YYYY-MM-DD-HHMM.css`) and renamed on every change. Serve them with a long-lived immutable cache header (`Cache-Control: public, max-age=31536000, immutable` — the sample Caddy configs in [`DEPLOY.md`](DEPLOY.md) and `Caddyfile.local` do this) and browsers can keep them for a year without ever going stale. The PNG is optional — replace it with any 1200x630 image, or delete it and the four `og:image`/`twitter:image` tags that reference it.
+The CSS and JS filenames are versioned (e.g. `style-YYYY-MM-DD-HHMM.css`) and renamed on every change. Serve them with a long-lived immutable cache header (`Cache-Control: public, max-age=31536000, immutable` — the sample Caddy configs in [`DEPLOY.md`](DEPLOY.md) and `Caddyfile.local` do this) and browsers can keep them for a year without ever going stale. The PNG is optional — replace it with any 1200x630 image, or delete it and the `og:image*` / `twitter:image` lines in `index.html` that reference it.
 
 You can deploy these in the site root as a stand-alone photo album site or in a subfolder such as `/photos` as a part of another site. Edit the CSS and HTML to your taste, set `public_url` and `site_name` in `album.toml` (the latter should match your `<h1>`), and see [Customising the frontend for your deployment](DEPLOY.md#customising-the-frontend-for-your-deployment) for the full list of deployment-specific values. No build step or framework is required.
 
