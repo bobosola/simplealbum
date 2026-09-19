@@ -4,6 +4,8 @@ This is a self-hosted cross-platform simple web photo album application. It's ba
 
 It is very lean on resource use (see [Resource Requirements](#resource-requirements) for measurements). During normal operation its CPU use is effectively zero and its memory use is small — about 12 MB idle. Generating thumbnails is a short, CPU-bound burst rather than a heavy one: memory peaks at roughly 100 MB per concurrent worker, so it is bounded by the `[worker] threads` setting rather than by the number of photos and videos. In short, it is a low-resource application that suits a small web server.
 
+It is also fast by architecture rather than by tuning: photos are plain files that the web server sends straight from the filesystem, so displaying one costs the application no measurable CPU — no database lookup, no re-encoding, no image bytes through the service — where an album that indexes its photos in a database and re-sizes them on demand pays a cost for every view. The viewer preloads each photo's neighbours, so stepping back and forth is normally a browser cache hit, and the only request that reaches the application while browsing is the folder listing, which is itself cached.
+
 You will need the ability to:
 
 - install `FFmpeg` on your web server
