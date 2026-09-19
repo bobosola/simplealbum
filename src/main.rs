@@ -13,6 +13,7 @@ mod worker;
 mod testutil;
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use anyhow::Context;
 use axum::{
@@ -31,23 +32,82 @@ use crate::{
     worker::{scan_existing, Worker},
 };
 
-/// Warn about missing media tools. `ffprobe` is checked separately from
-/// `ffmpeg`: it is a distinct binary that some split packages and minimal
-/// container images omit, and without it video metadata probing silently
-/// returns nothing (so videos get no duration and no dimensions).
-fn check_media_tools() {
-    if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
-        warn!("FFmpeg not found on PATH. Video thumbnail generation will be unavailable.");
-        warn!("Install FFmpeg: https://ffmpeg.org/download.html");
-    } else {
-        info!("FFmpeg detected.");
+/// Warn about missing media tools, but only when they are actually needed.
+///
+/// `ffprobe` is checked separately from `ffmpeg`: it is a distinct binary that
+/// some split packages and minimal container images omit, and without it video
+/// metadata probing silently returns nothing (so videos get no duration and no
+/// dimensions).
+///
+/// Neither tool is used for images, and they are the only external programs the
+/// service runs — so an album with no videos needs nothing installed. Warning
+/// about FFmpeg on every start of an image-only installation is noise that
+/// reads as breakage, hence the check for video files first.
+fn check_media_tools(root: &Path) {
+    let tool = |name: &str| {
+        std::process::Command::new(name)
+            .arg("-version")
+            .output()
+            .is_ok()
+    };
+    let (ffmpeg, ffprobe) = (tool("ffmpeg"), tool("ffprobe"));
+    if ffmpeg && ffprobe {
+        info!("FFmpeg and ffprobe detected.");
+        return;
     }
-    if std::process::Command::new("ffprobe").arg("-version").output().is_err() {
-        warn!("ffprobe not found on PATH. Video dimensions and durations will be unavailable.");
-        warn!("It is normally installed with FFmpeg. See https://ffmpeg.org/download.html");
-    } else {
-        info!("ffprobe detected.");
+
+    if !album_has_videos(root) {
+        info!("No videos found in the album, so FFmpeg is not required.");
+        return;
     }
+
+    if !ffmpeg {
+        warn!("FFmpeg not found on PATH: video thumbnails will be unavailable.");
+    }
+    if !ffprobe {
+        warn!("ffprobe not found on PATH: video dimensions and durations will be unavailable.");
+    }
+    warn!("Your album contains videos. Install FFmpeg (which normally includes ffprobe): https://ffmpeg.org/download.html");
+}
+
+/// Whether the album contains a video, stopping at the first one found.
+///
+/// Used only to decide whether a missing FFmpeg is worth warning about. The walk
+/// is the same shape as the worker's — dotfiles and `thumbs` are skipped, and a
+/// symlinked directory is never descended into — so it cannot find media the
+/// worker would refuse to process. A video-bearing album therefore costs one
+/// directory read, and only an image-only album is walked in full.
+fn album_has_videos(root: &Path) -> bool {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || name == "thumbs" {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let is_symlink = file_type.is_symlink();
+            let is_dir = if is_symlink {
+                entry.metadata().map(|m| m.is_dir()).unwrap_or(false)
+            } else {
+                file_type.is_dir()
+            };
+            if is_dir {
+                if !is_symlink {
+                    stack.push(entry.path());
+                }
+            } else if util::is_video_file(&name) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[tokio::main]
@@ -82,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     // every deployment the same wrong domain.
     info!("Admin URL: {}#admin={}", cfg.server.public_url, cfg.admin.key);
 
-    check_media_tools();
+    check_media_tools(&cfg.album.root);
 
     let db = Arc::new(Db::open(&cfg.state.db_path)?);
 

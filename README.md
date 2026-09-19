@@ -8,7 +8,8 @@ It is also fast by architecture rather than by tuning: photos are plain files th
 
 You will need the ability to:
 
-- install `FFmpeg` on your web server
+- install `FFmpeg` on your web server — only if your album contains videos
+  (images need no external tools)
 - install the binary application and run it as a service
 - edit your web server config file
 
@@ -69,7 +70,7 @@ Here's what's included:
 - **Keyboard & swipe navigation** — standard keyboard navigation in the image viewer, with swipe left and right for touch screens
 - **Image pre-loading** — automatic next and previous image pre-loading to improve the user experience and avoid load lag which can otherwise occur, particularly on small screen devices
 - **Browser history integration** — default browser back and forward actions work as expected
-- **Single binary** — one compiled executable, no runtime dependencies beyond FFmpeg
+- **Single binary** — one compiled executable, and no runtime dependencies at all for a photo-only album (FFmpeg is used only to read and thumbnail videos)
 - **SQLite backed state** — the cover photo choices and thumbnail metadata is held in a fully self-managed SQLite database (no user intervention, login, or maintenance is required)
 
 # Non-Features
@@ -133,7 +134,7 @@ The web server handles URL path mapping (as put together by the processes descri
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (to build from source)
-- [FFmpeg](https://ffmpeg.org/download.html) — must be on your `PATH` for video thumbnails
+- [FFmpeg](https://ffmpeg.org/download.html) — must be on your `PATH` for video thumbnails; not needed at all if your album has no videos
 - Any modern web browser
 - Any web server that supports reverse proxying (see Architecture below)
 - The ability to set up the binary as a service application on your server (described in detail in the Deploy docs).

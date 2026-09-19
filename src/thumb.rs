@@ -342,7 +342,14 @@ pub fn generate_video_thumb(
         ])
         .arg(&tmp);
 
-    let output = run_with_timeout(&mut cmd, EXTRACT_TIMEOUT)?;
+    // A missing binary surfaces here as a bare ENOENT, which tells an operator
+    // nothing about what to do; name the tool instead.
+    let output = run_with_timeout(&mut cmd, EXTRACT_TIMEOUT).map_err(|e| match e.downcast_ref::<std::io::Error>() {
+        Some(io) if io.kind() == std::io::ErrorKind::NotFound => anyhow::anyhow!(
+            "ffmpeg is not on PATH — install FFmpeg to generate video thumbnails"
+        ),
+        _ => e,
+    })?;
 
     if !output.status.success() {
         let _ = std::fs::remove_file(&tmp);

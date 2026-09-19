@@ -219,7 +219,7 @@ sudo apt update
 sudo apt install ffmpeg sqlite3
 ```
 
-- **FFmpeg**: Required for extracting video thumbnails. The Rust binary shells out to `ffmpeg` and `ffprobe`.
+- **FFmpeg**: Required only if the album contains videos, for extracting video thumbnails and reading their dimensions. The Rust binary shells out to `ffmpeg` and `ffprobe`; images are decoded in-process and need no external tools.
 - **SQLite**: Bundled inside the Rust binary via `rusqlite`, but the `sqlite3` CLI is useful for debugging.
 
 ### 1.2 Create Directories
@@ -430,7 +430,7 @@ Using Homebrew (https://brew.sh):
 brew install ffmpeg caddy
 ```
 
-- **FFmpeg**: Required for video thumbnail extraction.
+- **FFmpeg**: Required only if the album contains videos (thumbnail extraction and video dimensions).
 - **Caddy**: The edge web server. Optional — you can also use nginx or serve directly.
 
 ### 2.2 Create Directories
@@ -809,7 +809,7 @@ Bookmark this URL. The key is stored in your browser's `localStorage`. To revoke
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Thumbnails never generate | FFmpeg missing | Install FFmpeg and ensure it is on PATH |
+| Video thumbnails never generate | FFmpeg missing (image thumbnails need no external tools) | Install FFmpeg and ensure it is on PATH; the log names the missing tool |
 | "Address already in use" | Port 8080 occupied | Change `bind` in `album.toml` |
 | Photos appear sideways | Missing EXIF orientation | Already handled by `kamadak-exif` — ensure source images have EXIF |
 | High CPU on startup | Large backlog | Normal — the background worker processes files asynchronously |
