@@ -224,6 +224,11 @@ function openViewer(index) {
     viewer.classList.remove('hidden');
     document.body.classList.add('viewer-open');
     renderViewerItem();
+    // Landscape phone: spend the tap's activation on full screen, since that is
+    // the orientation with the least room to spare. Anything else opens as-is.
+    if (landscapePhone.matches && !fullscreenElement()) {
+        requestFullscreen(fullscreenTarget);
+    }
     // Push history state so browser back button closes the viewer
     history.pushState({path: currentPath, view: index}, '');
 }
@@ -261,6 +266,9 @@ function renderViewerItem() {
     const content = document.getElementById('viewer-content');
     const src = photoUrl(photo.name);
     content.innerHTML = '';
+    // The previous <img> is gone, so any transform recorded against it is stale.
+    zoomState.img = null;
+    zoomReset();
     if (photo.type === 'video') {
         const video = document.createElement('video');
         video.src = src;
@@ -273,6 +281,7 @@ function renderViewerItem() {
         img.alt = photo.name;
         img.decoding = 'async';
         content.appendChild(img);
+        zoomState.img = img;
     }
     preloadAdjacentImages();
 }
@@ -328,7 +337,91 @@ function hideViewer() {
     stopViewerVideo();
     document.getElementById('viewer').classList.add('hidden');
     document.body.classList.remove('viewer-open');
+    zoomState.img = null;
+    zoomReset();
+    // Leaving the viewer must not strand the user in full screen.
+    exitFullscreen();
 }
+
+// ---------------------------------------------------------------------------
+// Full screen
+//
+// A phone held in landscape has a viewport only ~360px tall, and the browser
+// chrome (status bar + URL bar) takes roughly a third of it. No CSS can reclaim
+// that — the Fullscreen API is the only thing that hides it, which is why
+// landscape was the one orientation where the viewer looked cramped.
+//
+// `requestFullscreen` needs transient user activation, so it can only be entered
+// from a tap or click: the toolbar button, or the tap that opened the viewer.
+// A bare orientationchange is not a gesture and would be rejected, which is why
+// there is no "enter full screen when the phone turns" listener here.
+const viewerEl = document.getElementById('viewer');
+const fullscreenBtn = document.getElementById('viewer-fullscreen');
+
+// Full screen is requested on <html>, not on the viewer, because the Fullscreen
+// API renders only the fullscreen element's subtree. The share sheet and the
+// toast are siblings of the viewer, so fullscreening the viewer would have made
+// Share open an invisible panel behind the black. <html> contains everything.
+const fullscreenTarget = document.documentElement;
+
+// iPhone Safari has no element full screen (only video), so offer the button
+// only where it can do something.
+if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) {
+    fullscreenBtn.classList.add('hidden');
+}
+
+function fullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function requestFullscreen(el) {
+    const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!fn) return;
+    try {
+        const p = fn.call(el);
+        // A refused request (permissions policy, or another full screen element)
+        // must not surface as an unhandled rejection; the viewer still works.
+        if (p && p.catch) p.catch(() => {});
+    } catch (_) { /* nothing else to do */ }
+}
+
+function exitFullscreen() {
+    if (!fullscreenElement()) return;
+    const fn = document.exitFullscreen || document.webkitExitFullscreen;
+    if (!fn) return;
+    try {
+        const p = fn.call(document);
+        if (p && p.catch) p.catch(() => {});
+    } catch (_) { /* nothing else to do */ }
+}
+
+// Keeps the button in step with the real state, including when full screen is
+// left by the browser itself (Escape, or a swipe from the top edge).
+function syncFullscreenButton() {
+    const on = fullscreenElement() === fullscreenTarget;
+    viewerEl.dataset.fullscreen = on ? '1' : '';
+    fullscreenBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const label = on ? 'Exit full screen' : 'Full screen';
+    fullscreenBtn.title = label;
+    fullscreenBtn.setAttribute('aria-label', label);
+}
+
+function toggleFullscreen() {
+    if (fullscreenElement() === fullscreenTarget) exitFullscreen();
+    else requestFullscreen(fullscreenTarget);
+}
+
+// A phone lying on its side is the case the viewer was built for here, and the
+// tap that opened the photo is valid activation, so full screen can be entered
+// from there. The query keeps desktops and tablets out of it: they are in
+// landscape by default, so entering full screen on every open would be a
+// hijack, not a courtesy. A short *and* coarse-pointer viewport means a phone.
+const landscapePhone = window.matchMedia(
+    '(orientation: landscape) and (pointer: coarse) and (max-height: 520px)'
+);
+
+document.addEventListener('fullscreenchange', syncFullscreenButton);
+document.addEventListener('webkitfullscreenchange', syncFullscreenButton);
 
 function viewerDownload() {
     const photo = currentAlbum.photos[currentViewerIndex];
@@ -712,40 +805,250 @@ document.addEventListener('keydown', e => {
     if (viewer.classList.contains('hidden')) return;
     if (e.key === 'ArrowLeft') viewerPrev();
     if (e.key === 'ArrowRight') viewerNext();
-    if (e.key === 'Escape') closeViewer();
+    if (e.key === 'Escape') {
+        // While the viewer holds full screen the browser uses Escape to leave
+        // it; closing the photo as well would take two things away at once.
+        if (fullscreenElement() === fullscreenTarget) return;
+        closeViewer();
+    }
 });
 
-// Swipe navigation (mobile)
-(function initSwipe() {
+// ---------------------------------------------------------------------------
+// Viewer zoom
+//
+// A page in full screen cannot be pinch-zoomed: Chrome on Android resets the
+// viewport scale on entry and ignores the meta viewport's scale settings, and a
+// page zoom would scale the toolbar along with the photo anyway. So the viewer
+// scales the photo itself — pinch to zoom about the fingers, drag to pan,
+// double-tap to toggle. Doing the gesture handling here is also what stops a
+// pinch from being read as a swipe to the next photo.
+const ZOOM_MAX = 5;
+const ZOOM_DOUBLE_TAP = 2.5;
+const zoomState = { scale: 1, tx: 0, ty: 0, img: null };
+
+function zoomFrame() {
+    return document.getElementById('viewer-content');
+}
+
+function zoomReset() {
+    zoomState.scale = 1;
+    zoomState.tx = 0;
+    zoomState.ty = 0;
+    if (zoomState.img) {
+        zoomState.img.style.transition = '';
+        zoomState.img.style.transform = '';
+    }
+}
+
+// Bounds the pan by the displayed (object-fit: contain) size of the photo,
+// scaled up, rather than by the element box: otherwise a letterboxed photo
+// could be dragged off into the black beside it.
+function zoomClamp() {
+    const img = zoomState.img;
+    const frame = zoomFrame();
+    if (!img || !frame) return;
+    if (zoomState.scale <= 1) {
+        zoomState.scale = 1;
+        zoomState.tx = 0;
+        zoomState.ty = 0;
+        return;
+    }
+    const r = frame.getBoundingClientRect();
+    let drawW = r.width;
+    let drawH = r.height;
+    if (img.naturalWidth && img.naturalHeight) {
+        const ar = img.naturalWidth / img.naturalHeight;
+        if (r.width / r.height > ar) {
+            drawH = r.height;
+            drawW = r.height * ar;
+        } else {
+            drawW = r.width;
+            drawH = r.width / ar;
+        }
+    }
+    const maxX = Math.max(0, (drawW * zoomState.scale - r.width) / 2);
+    const maxY = Math.max(0, (drawH * zoomState.scale - r.height) / 2);
+    zoomState.tx = Math.min(maxX, Math.max(-maxX, zoomState.tx));
+    zoomState.ty = Math.min(maxY, Math.max(-maxY, zoomState.ty));
+}
+
+// transform-origin is the frame's centre (the photo fills it edge to edge), so
+// a source point q from that centre lands at t + scale*q and the pan limits
+// above are symmetric.
+function zoomApply(animate) {
+    if (!zoomState.img) return;
+    zoomState.img.style.transition = animate ? 'transform 0.2s ease-out' : 'none';
+    zoomState.img.style.transform =
+        `translate(${zoomState.tx}px, ${zoomState.ty}px) scale(${zoomState.scale})`;
+}
+
+// Zoom towards the tapped point, so whatever was under the finger stays put,
+// and back to fit on the second double-tap.
+function zoomToggleAt(x, y) {
+    const frame = zoomFrame();
+    if (!frame || !zoomState.img) return;
+    const r = frame.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    if (zoomState.scale > 1) {
+        zoomState.scale = 1;
+        zoomState.tx = 0;
+        zoomState.ty = 0;
+    } else {
+        const s = ZOOM_DOUBLE_TAP;
+        zoomState.scale = s;
+        zoomState.tx = (1 - s) * (x - cx);
+        zoomState.ty = (1 - s) * (y - cy);
+    }
+    zoomClamp();
+    zoomApply(true);
+}
+
+// A rotation moves the frame's centre out from under the transform.
+window.addEventListener('orientationchange', zoomReset);
+
+// Viewer gestures: pinch to zoom, drag to pan a zoomed photo, and swipe to
+// change photo when at fit size. Touch only — a mouse uses the toolbar buttons.
+(function initViewerGestures() {
     const content = document.getElementById('viewer-content');
-    let startX = 0;
-    let startY = 0;
-    const threshold = 50;
+    const MOVE_SLOP = 10;   // px of travel before a touch stops being a tap
+    const SWIPE_MIN = 50;   // px of horizontal travel that changes photo
+    const TAP_MS = 300;     // double-tap window
+
+    let pinch = null;    // {d0, s0, tx0, ty0, m0}
+    let single = null;   // {x0, y0, x, y, t0, moved, swipeable}
+    let lastTap = 0;
+
+    const frameCentre = () => {
+        const r = content.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    };
+    const pointOf = t => ({ x: t.clientX, y: t.clientY });
+    const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
     content.addEventListener('touchstart', e => {
-        startX = e.changedTouches[0].screenX;
-        startY = e.changedTouches[0].screenY;
-    }, { passive: true });
+        if (e.touches.length >= 2) {
+            // Two fingers are a pinch, never a swipe — whatever they end up doing.
+            single = null;
+            if (e.touches.length === 2 && zoomState.img) {
+                const a = pointOf(e.touches[0]);
+                const b = pointOf(e.touches[1]);
+                pinch = {
+                    d0: Math.max(1, dist(a, b)),
+                    s0: zoomState.scale,
+                    tx0: zoomState.tx,
+                    ty0: zoomState.ty,
+                    m0: mid(a, b),
+                };
+            }
+            return;
+        }
+        if (e.touches.length !== 1) return;
+        const t = pointOf(e.touches[0]);
+        single = {
+            x0: t.x, y0: t.y, x: t.x, y: t.y,
+            t0: Date.now(), moved: false, swipeable: true,
+        };
+    }, { passive: false });
+
+    content.addEventListener('touchmove', e => {
+        if (pinch && e.touches.length >= 2) {
+            e.preventDefault();
+            const a = pointOf(e.touches[0]);
+            const b = pointOf(e.touches[1]);
+            const m1 = mid(a, b);
+            const c = frameCentre();
+            const s1 = Math.min(ZOOM_MAX, Math.max(1, pinch.s0 * dist(a, b) / pinch.d0));
+            // Hold the photo point under the fingers still:
+            //   t1 = m1 - c - s1 * (m0 - c - t0) / s0
+            zoomState.scale = s1;
+            zoomState.tx = m1.x - c.x - s1 * (pinch.m0.x - c.x - pinch.tx0) / pinch.s0;
+            zoomState.ty = m1.y - c.y - s1 * (pinch.m0.y - c.y - pinch.ty0) / pinch.s0;
+            zoomClamp();
+            zoomApply(false);
+            return;
+        }
+        if (!single || e.touches.length !== 1) return;
+        const t = pointOf(e.touches[0]);
+        if (Math.hypot(t.x - single.x0, t.y - single.y0) > MOVE_SLOP) single.moved = true;
+        // A drag pans a zoomed photo. At fit size the same finger is a swipe,
+        // but that is decided when it lifts, not here.
+        if (zoomState.scale > 1) {
+            e.preventDefault();
+            zoomState.tx += t.x - single.x;
+            zoomState.ty += t.y - single.y;
+            single.x = t.x;
+            single.y = t.y;
+            single.x0 = t.x;
+            single.y0 = t.y;
+            zoomClamp();
+            zoomApply(false);
+        }
+    }, { passive: false });
 
     content.addEventListener('touchend', e => {
-        const endX = e.changedTouches[0].screenX;
-        const endY = e.changedTouches[0].screenY;
-        const dx = endX - startX;
-        const dy = endY - startY;
+        // One finger left after a pinch: carry on as a drag, never a swipe.
+        if (pinch && e.touches.length === 1) {
+            pinch = null;
+            const t = pointOf(e.touches[0]);
+            single = {
+                x0: t.x, y0: t.y, x: t.x, y: t.y,
+                t0: Date.now(), moved: true, swipeable: false,
+            };
+            zoomClamp();
+            zoomApply(false);
+            return;
+        }
+        if (e.touches.length > 0) return;   // a pinch is still in progress
+        if (pinch) {
+            pinch = null;
+            zoomClamp();
+            zoomApply(false);
+            single = null;
+            return;
+        }
+        if (!single) return;
 
+        const s = single;
+        single = null;
+        const end = pointOf(e.changedTouches[0]);
+
+        if (!s.moved && Date.now() - s.t0 < TAP_MS) {
+            if (Date.now() - lastTap < TAP_MS) {
+                lastTap = 0;
+                zoomToggleAt(end.x, end.y);
+                return;
+            }
+            lastTap = Date.now();
+        } else {
+            lastTap = 0;
+        }
+
+        if (!s.swipeable || zoomState.scale > 1) return;
+        const dx = end.x - s.x0;
+        const dy = end.y - s.y0;
         // Only act on clear horizontal swipes
-        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > threshold) {
+        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_MIN) {
             if (dx < 0) {
                 viewerNext();   // swipe left → next
             } else {
                 viewerPrev();   // swipe right → previous
             }
         }
+    }, { passive: false });
+
+    content.addEventListener('touchcancel', () => {
+        pinch = null;
+        single = null;
+        zoomClamp();
+        zoomApply(false);
     }, { passive: true });
 })();
 
 // Event bindings
 document.getElementById('viewer-close').addEventListener('click', closeViewer);
+document.getElementById('viewer-fullscreen').addEventListener('click', toggleFullscreen);
 document.getElementById('viewer-up').addEventListener('click', () => {
     closeViewer();
 });

@@ -68,6 +68,8 @@ Here's what's included:
 - **Dark mode** — persisted automatic or manual toggle
 - **Sharing** — a standard share icon offers copy-link plus sharing a file or folder to common social media platforms
 - **Keyboard & swipe navigation** — standard keyboard navigation in the image viewer, with swipe left and right for touch screens
+- **Photo zoom** — pinch to zoom into a photo, drag to pan it, double-tap to toggle; zooming is handled by the viewer rather than the browser, so it still works in full screen (where Android blocks page pinch-zoom) and leaves the toolbar at its normal size
+- **Full screen viewing** — the viewer has a full-screen button that hides the browser chrome, which matters most in landscape on a phone, where the status and URL bars otherwise take about a third of the screen; a phone opening a photo in landscape goes full screen automatically
 - **Image pre-loading** — automatic next and previous image pre-loading to improve the user experience and avoid load lag which can otherwise occur, particularly on small screen devices
 - **Browser history integration** — default browser back and forward actions work as expected
 - **Single binary** — one compiled executable, and no runtime dependencies at all for a photo-only album (FFmpeg is used only to read and thumbnail videos)
@@ -81,6 +83,7 @@ These features have been deliberately omitted (KISS principle again):
 - No ability to allow different user perms — everyone can see all the photos
 - No intermediate (space-consuming) range of thumbnail sizes — you get just the default ones
 - No image editing features
+- No installable app or PWA — this is a web site, not an app, and nothing ever asks the visitor to install it; phones use the viewer's own full screen button instead
 
 # Known Limitations
 

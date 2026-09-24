@@ -300,6 +300,15 @@ header h1 {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    /* A panic-scroll at fit size must not trigger Chrome's pull-to-refresh. */
+    overscroll-behavior: none;
+}
+
+/* Full screen is requested on <html> (see app.js), so match the synced state
+   attribute rather than :fullscreen. A pure black backdrop hides the letterbox
+   better than the translucent overlay does. */
+.viewer[data-fullscreen="1"] {
+    background: #000;
 }
 
 body.viewer-open {
@@ -310,6 +319,8 @@ body.viewer-open {
     display: none;
 }
 
+/* The toolbar sits in the flow on roomy screens. Short landscape viewports
+   override this and float it over the media — see the media query below. */
 .viewer-toolbar {
     display: flex;
     justify-content: center;
@@ -336,12 +347,35 @@ body.viewer-open {
     background: rgba(255,255,255,0.3);
 }
 
+/* Two icons on one button; the arrow-style class carries no styling itself. */
+#viewer-fullscreen svg {
+    display: block;
+}
+
+/* No generic `.hidden` rule exists, so hide the button explicitly when the
+   browser has no element full screen (iPhone Safari). */
+#viewer-fullscreen.hidden {
+    display: none;
+}
+
+#viewer-fullscreen .fs-exit {
+    display: none;
+}
+
+.viewer[data-fullscreen="1"] #viewer-fullscreen .fs-enter {
+    display: none;
+}
+
+.viewer[data-fullscreen="1"] #viewer-fullscreen .fs-exit {
+    display: block;
+}
+
 .viewer-content {
     flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1rem;
+    padding: 0;
     min-height: 0;
     overflow: hidden;
 }
@@ -351,6 +385,18 @@ body.viewer-open {
     width: 100%;
     height: 100%;
     object-fit: contain;
+}
+
+/* The viewer handles pinch and drag itself (see the zoom block in app.js), so
+   the browser's own touch actions are switched off for the photo. Without this
+   the two would fight, and on Android the page's pinch-zoom is unavailable in
+   full screen anyway. */
+.viewer-content img {
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    will-change: transform;
 }
 
 .modal {
@@ -554,5 +600,35 @@ body.viewer-open {
     }
     .crumb-bar .breadcrumbs {
         padding-left: 0.75rem;
+    }
+    /* Seven buttons on a 360px-wide screen: tighten the gaps so the toolbar
+       stays on one row instead of wrapping over the photo. */
+    .viewer-toolbar {
+        gap: 0.4rem;
+        padding-left: 0.4rem;
+        padding-right: 0.4rem;
+    }
+    .viewer-toolbar button {
+        padding: 0.5rem 0.6rem;
+    }
+}
+
+/* Landscape phones are short as well as wide. There, a toolbar in the flow
+   costs a slice of a viewport that browser chrome has already cut to ~360px,
+   so it floats over the photo instead: the gradient keeps the buttons legible
+   without a solid bar. The photo itself is left to fill the whole screen. */
+@media (orientation: landscape) and (max-height: 520px) {
+    .viewer-toolbar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 2;
+        gap: 0.4rem;
+        padding: 0.3rem 0.6rem 1.5rem;
+        background: linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0));
+    }
+    .viewer-toolbar button {
+        padding: 0.35rem 0.6rem;
     }
 }

@@ -52,7 +52,7 @@
     <meta name="twitter:description" content="Browse our photo and video collection by folder.">
     <meta name="twitter:image" content="https://www.osola.org.uk/photos/og-image.png">
 
-    <link rel="stylesheet" href="style-2026-09-19-2221.css">
+    <link rel="stylesheet" href="style-2026-09-24-2052.css">
 </head>
 <body>
     <header>
@@ -98,6 +98,25 @@
                     <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
                 </svg>
             </button>
+            <!-- Full screen hides the browser chrome, which on a phone held in
+                 landscape is what leaves the photo about half the height it could
+                 have. Two icons; CSS shows whichever matches the current state. -->
+            <button id="viewer-fullscreen" title="Full screen" aria-label="Full screen" aria-pressed="false">
+                <svg class="fs-enter" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3"/>
+                    <path d="M16 3h3a2 2 0 0 1 2 2v3"/>
+                    <path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+                    <path d="M8 21H5a2 2 0 0 1-2-2v-3"/>
+                </svg>
+                <svg class="fs-exit" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3v3a2 2 0 0 1-2 2H3"/>
+                    <path d="M16 3v3a2 2 0 0 0 2 2h3"/>
+                    <path d="M16 21v-3a2 2 0 0 1 2-2h3"/>
+                    <path d="M8 21v-3a2 2 0 0 0-2-2H3"/>
+                </svg>
+            </button>
             <button id="viewer-close" title="Close">&#10005;</button>
         </div>
         <div class="viewer-content" id="viewer-content"></div>
@@ -132,6 +151,6 @@
 
     <div id="toast" class="toast hidden"></div>
 
-    <script src="app-2026-09-19-2221.js"></script>
+    <script src="app-2026-09-24-2052.js"></script>
 </body>
 </html>

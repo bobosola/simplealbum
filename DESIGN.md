@@ -404,6 +404,29 @@ The user checks whichever folders should use this image as their cover, then con
 - **Actions**:
   - **Download**: direct link to `/photoalbum/<path>/<file>`.
   - **Share**: opens the share sheet for the current item (see Sharing below).
+  - **Full screen**: toggles the Fullscreen API on the document.
+- **Zoom**: the viewer implements pinch-zoom, drag-to-pan and double-tap-to-toggle
+  on the photo itself, as a CSS transform on the `<img>`. It cannot delegate to
+  the browser: Android Chrome resets the viewport scale when a page enters full
+  screen, so page pinch-zoom is unavailable there, and even where it works it
+  would scale the toolbar along with the photo. Owning the gesture is also what
+  stops a pinch from being read as a swipe to the next photo, so a touch
+  sequence that ever involves two fingers is disqualified from swiping. Panning
+  is bounded by the displayed (`object-fit: contain`) image size rather than the
+  frame, so a letterboxed photo cannot be dragged away into the black beside it.
+  Videos keep their native controls and are not zoomed.
+- **Full screen**: the browser chrome (status bar plus URL bar) is what makes
+  landscape on a phone the worst case — it takes roughly a third of a ~360px
+  viewport, and no CSS can reclaim it. The Fullscreen API can, so the viewer
+  offers a button. A phone opening a photo while already in landscape enters
+  full screen from the opening tap's activation, since that is the orientation
+  with the least room; desktops and tablets, which are in landscape by default,
+  are left alone. Full screen is requested on `<html>` rather than on the
+  viewer `<div>`, because the API renders only the fullscreen element's subtree
+  and the share sheet and toast are siblings of the viewer. On short landscape
+  viewports the toolbar also floats over the photo instead of taking a row,
+  leaving the media the whole screen. iPhone Safari has no element full screen,
+  so the button is hidden there.
 
 #### Sharing
 
@@ -767,7 +790,7 @@ The following features are **not** part of the initial scope, but the architectu
 - [ ] Thumbnails are generated automatically and stored in per-folder `thumbs/` directories.
 - [ ] Album grid shows folders with a representative thumbnail and counts.
 - [ ] Admin can set/change the cover image for any folder via a pre-shared key; public visitors cannot.
-- [ ] Photo viewer scales to viewport, supports Prev/Next/Up navigation, Download, and Share.
+- [ ] Photo viewer scales to viewport, supports Prev/Next/Up navigation, Download, Share and Full screen.
 - [ ] Folder and photo views both offer a share sheet with copy-to-clipboard and social platform targets.
 - [ ] Zero frontend build step. Zero database server setup.
 - [ ] Folders and photos are displayed in filename order, giving the user control via file naming.
